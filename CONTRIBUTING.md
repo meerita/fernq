@@ -130,7 +130,16 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo bench  --workspace --locked
 ```
 
-CI runs the same checks on Linux x86_64 and macOS aarch64 for every pull request and for every push to `dev` and `master`. CI compiles benchmarks with `--no-run` and does not execute them.
+Fernq has no hosted CI. Run the checks locally before you open a pull request.
+
+To run the same checks on Linux in a container, install Docker and run from the repository root:
+
+```sh
+docker build --platform linux/arm64 -f docker/linux-check.Dockerfile -t fernq-linux-check .
+docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
+```
+
+The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It compiles benchmarks with `--no-run` and does not execute them.
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 
