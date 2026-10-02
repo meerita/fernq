@@ -143,6 +143,18 @@ The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the 
 
 The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
 
+The root `Makefile` runs the same commands. `make` with no target lists the targets. The main targets are:
+
+```text
+make check       host checks: fmt, clippy, build, test, bench
+make up          build the Linux container image
+make linux       run the checks in the Linux container
+make check-all   host checks, then the Linux container
+make down        remove the Linux container image
+```
+
+`make scan` scans the pinned base image with Docker Scout and requires `docker login`.
+
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 
 ## Performance Changes
