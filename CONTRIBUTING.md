@@ -91,7 +91,7 @@ Unless documented otherwise:
 - avoid unnecessary dependencies
 - avoid `unsafe` unless there is a demonstrated need
 
-Every `unsafe` block must document the invariants that make it safe.
+Every `unsafe` block must document the invariants that make it safe. The Clippy check rejects an `unsafe` block without a `// SAFETY:` comment.
 
 ## Dependencies
 
@@ -140,6 +140,8 @@ docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
 ```
 
 The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It compiles benchmarks with `--no-run` and does not execute them.
+
+The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 

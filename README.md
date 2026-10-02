@@ -123,7 +123,7 @@ cargo build --workspace --locked
 
 The `fernq` binary is a placeholder. It writes `fernq: no compiler functionality is implemented` to stderr and exits with a failure status. It does not read its arguments. This output and exit status are not a stable interface.
 
-Builds are validated on macOS aarch64 and Linux aarch64. Other hosts, including Linux x86_64, are not validated.
+Builds are validated on macOS aarch64, and on Linux aarch64 in the Debian-based container that [CONTRIBUTING.md](CONTRIBUTING.md) describes. Other hosts, including Linux x86_64, are not validated.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the test, format, lint, and benchmark commands.
 
