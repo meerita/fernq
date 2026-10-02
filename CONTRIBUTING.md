@@ -120,12 +120,14 @@ If an existing test is believed to be incorrect, demonstrate why before changing
 
 Relevant validation should remain green before a pull request is considered complete.
 
-Once the Rust workspace exists, the baseline checks will include:
+Run the baseline checks from the repository root:
 
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
+```sh
+cargo build  --workspace --locked
+cargo test   --workspace --locked
+cargo fmt    --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo bench  --workspace --locked
 ```
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
