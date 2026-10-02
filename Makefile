@@ -7,7 +7,7 @@ DOCKERFILE := docker/linux-check.Dockerfile
 BASE_IMAGE := $(shell sed -n 's/^FROM //p' $(DOCKERFILE))
 
 CARGO_BUILD  := cargo build --workspace --locked
-CARGO_TEST   := cargo test --workspace --locked
+CARGO_TEST   := cargo test --workspace --locked --no-fail-fast
 CARGO_FMT    := cargo fmt --all --check
 CARGO_CLIPPY := cargo clippy --workspace --all-targets --locked -- -D warnings
 CARGO_BENCH  := cargo bench --workspace --locked
