@@ -173,9 +173,10 @@ Integration tests:
 Compile fixtures:
 
 - A compile fixture is one Rust source file per case at `crates/fernq/tests/fixtures/<class>/<name>.rs`. The class directory names the expected result. The file name describes the case.
-- Do not put a file directly in `tests/fixtures/`. Cargo builds `tests/<dir>/main.rs` as a test target. The fixture runner reports any file directly in `tests/fixtures/`.
+- Do not put a file directly in `tests/fixtures/`. Cargo builds `tests/<dir>/main.rs` as a test target.
 - Fixtures have no directives.
-- The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code.
+- The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code. A new class directory needs an entry in the runner's class list.
+- The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, and a non-`.rs` file in a class directory.
 
 The only fixture class is `compile-fail`. The driver does not read its input, so every fixture currently expects the placeholder outcome: a failure status, empty stdout, and the line `fernq: no compiler functionality is implemented` on stderr. The runner does not check that the driver rejects a `compile-fail` fixture.
 
