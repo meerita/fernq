@@ -124,7 +124,7 @@ Run the baseline checks from the repository root:
 
 ```sh
 cargo build  --workspace --locked
-cargo test   --workspace --locked
+cargo test   --workspace --locked --no-fail-fast
 cargo fmt    --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo bench  --workspace --locked

@@ -20,5 +20,5 @@ cargo -V; \
 cargo fmt --all --check; \
 cargo clippy --workspace --all-targets --locked -- -D warnings; \
 cargo build --workspace --locked; \
-cargo test --workspace --locked; \
+cargo test --workspace --locked --no-fail-fast; \
 cargo bench --workspace --locked --no-run"]
