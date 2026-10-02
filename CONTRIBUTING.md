@@ -130,6 +130,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo bench  --workspace --locked
 ```
 
+CI runs the same checks on Linux x86_64 and macOS aarch64 for every pull request and for every push to `dev` and `master`. CI compiles benchmarks with `--no-run` and does not execute them.
+
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 
 ## Performance Changes

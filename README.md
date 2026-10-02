@@ -114,7 +114,18 @@ Large subsystem boundaries will be introduced only after their responsibilities 
 
 Fernq does not yet have a usable compiler implementation.
 
-Build instructions will be added once the initial Rust workspace is established.
+The repository is a Cargo workspace. `rust-toolchain.toml` pins the Rust toolchain that builds Fernq. Install [rustup](https://rustup.rs), then run from the repository root:
+
+```sh
+rustup toolchain install
+cargo build --workspace --locked
+```
+
+The `fernq` binary is a placeholder. It writes `fernq: no compiler functionality is implemented` to stderr and exits with a failure status. It does not read its arguments. This output and exit status are not a stable interface.
+
+Builds are validated on Linux x86_64 and macOS aarch64. Other hosts are not validated.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the test, format, lint, and benchmark commands.
 
 ## Contributing
 
