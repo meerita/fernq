@@ -157,6 +157,45 @@ make down        remove the Linux container image
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 
+### Test conventions
+
+Unit tests:
+
+- Place unit tests in a `#[cfg(test)] mod tests` module at the end of the tested module.
+- Unit tests do not read or write files.
+- A test name describes the tested behavior.
+
+Integration tests:
+
+- Put one file per behavior in `crates/fernq/tests/`.
+- Run the compiler through the `CARGO_BIN_EXE_fernq` path that Cargo provides.
+
+Compile fixtures:
+
+- A compile fixture is one Rust source file per case at `crates/fernq/tests/fixtures/<class>/<name>.rs`. The class directory names the expected result. The file name describes the case.
+- Do not put a file directly in `tests/fixtures/`. Cargo builds `tests/<dir>/main.rs` as a test target. The fixture runner reports any file directly in `tests/fixtures/`.
+- Fixtures have no directives.
+- The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code.
+
+The only fixture class is `compile-fail`. The driver does not read its input, so every fixture currently expects the placeholder outcome: a failure status, empty stdout, and the line `fernq: no compiler functionality is implemented` on stderr. The runner does not check that the driver rejects a `compile-fail` fixture.
+
+Temporary output:
+
+- Only integration tests write temporary output.
+- A test writes under `CARGO_TARGET_TMPDIR/<test-name>/`. It clears that directory at start and leaves it after the run for inspection.
+
+Expected output:
+
+- The repository has no snapshot files.
+- A test states exact output inline only when exact output is the contract.
+- A rejection check asserts the error class, not the full message wording.
+
+Failure output:
+
+- The test command runs with `--no-fail-fast`. One run reports every failing test target.
+- The fixture runner reports every mismatch in one failure. Each mismatch shows the fixture path relative to `crates/fernq`, the expected outcome, the exit code, stdout, and stderr.
+- Test output uses the default libtest format.
+
 ## Performance Changes
 
 Performance work must include enough information to reproduce the result.
