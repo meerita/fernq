@@ -28,8 +28,6 @@ Specific architectural decisions and performance claims will only be documented 
 
 Fernq is written in Rust.
 
-Development rules and requirements for contributors and coding agents are documented in [`AGENTS.md`](AGENTS.md).
-
 ## License
 
 Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE).
