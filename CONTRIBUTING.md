@@ -91,7 +91,7 @@ Unless documented otherwise:
 - avoid unnecessary dependencies
 - avoid `unsafe` unless there is a demonstrated need
 
-Every `unsafe` block must document the invariants that make it safe.
+Every `unsafe` block must document the invariants that make it safe. The Clippy check rejects an `unsafe` block without a `// SAFETY:` comment.
 
 ## Dependencies
 
@@ -120,13 +120,40 @@ If an existing test is believed to be incorrect, demonstrate why before changing
 
 Relevant validation should remain green before a pull request is considered complete.
 
-Once the Rust workspace exists, the baseline checks will include:
+Run the baseline checks from the repository root:
 
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
+```sh
+cargo build  --workspace --locked
+cargo test   --workspace --locked
+cargo fmt    --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo bench  --workspace --locked
 ```
+
+Fernq has no hosted CI. Run the checks locally before you open a pull request.
+
+To run the same checks on Linux in a container, install Docker and run from the repository root:
+
+```sh
+docker build --platform linux/arm64 -f docker/linux-check.Dockerfile -t fernq-linux-check .
+docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
+```
+
+The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It compiles benchmarks with `--no-run` and does not execute them.
+
+The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
+
+The root `Makefile` runs the same commands. `make` with no target lists the targets. The main targets are:
+
+```text
+make check       host checks: fmt, clippy, build, test, bench
+make up          build the Linux container image
+make linux       run the checks in the Linux container
+make check-all   host checks, then the Linux container
+make down        remove the Linux container image
+```
+
+`make scan` scans the pinned base image with Docker Scout and requires `docker login`.
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
 
