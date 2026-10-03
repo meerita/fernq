@@ -178,7 +178,7 @@ Compile fixtures:
 - The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code. A new class directory needs an entry in the runner's class list.
 - The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, and a non-`.rs` file in a class directory.
 
-The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. Compilation is not implemented, so every fixture currently expects the valid-invocation outcome that [README.md](README.md#building) describes: exit status 1, empty stdout, and no file at the output path. The runner does not compare stderr. An input that cannot be loaded also exits with status 1, so the runner cannot tell a load failure from the not-implemented outcome. No compiler stage rejects source yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
+The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. Compilation is not implemented, so every fixture currently expects the valid-invocation outcome that [README.md](README.md#building) describes: exit status 1, empty stdout, a diagnostic of kind `compilation-not-implemented` on stderr, and no file at the output path. The runner identifies the outcome by the diagnostic kind, so a load failure does not pass as the not-implemented outcome. The runner does not compare message wording. No compiler stage rejects source yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
 
 Temporary output:
 
@@ -190,7 +190,7 @@ Expected output:
 
 - The repository has no snapshot files.
 - A test states exact output inline only when exact output is the contract.
-- A rejection check asserts the error class, not the full message wording.
+- A rejection check asserts the diagnostic kind, for example that stderr contains `error[input-not-found]:`, not the message wording.
 
 Failure output:
 
