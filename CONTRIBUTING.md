@@ -139,14 +139,15 @@ docker build --platform linux/arm64 -f docker/linux-check.Dockerfile -t fernq-li
 docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
 ```
 
-The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It compiles benchmarks with `--no-run` and does not execute them.
+The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It compiles benchmarks with `--no-run` and does not execute them. It also runs the Unicode table generator checks that `make tools` runs.
 
 The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
 
 The root `Makefile` runs the same commands. `make` with no target lists the targets. The main targets are:
 
 ```text
-make check       host checks: fmt, clippy, build, test, bench
+make check       host checks: fmt, clippy, build, test, bench, tools
+make tools       format check, lint, and unit tests of the Unicode table generator
 make up          build the Linux container image
 make linux       run the checks in the Linux container
 make check-all   host checks, then the Linux container
@@ -286,6 +287,15 @@ cleanup
 ## Generated and Vendored Files
 
 Do not manually modify generated files.
+
+`crates/fernq/src/unicode/tables.rs` holds the `XID_Start` and `XID_Continue` tables that identifiers use. `tools/unicode-tables.rs` generates it from `DerivedCoreProperties.txt` of the Unicode Character Database 17.0.0. The repository does not contain that file. To regenerate the tables, download it and run the generator:
+
+```sh
+curl -fsSLO https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+make unicode-tables UCD=DerivedCoreProperties.txt
+```
+
+The generator accepts only the pinned file, with SHA-256 `24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08` and first line `# DerivedCoreProperties-17.0.0.txt`. For any other input it writes nothing and exits with a nonzero status. The output depends only on the input, so a regeneration from the pinned file leaves `tables.rs` unchanged. `make check` and the Linux container compile, lint, and test the generator, and do not run it. A change of the Unicode version changes which Rust programs `fernq` accepts, and goes with a change of the Rust version that `fernq` targets.
 
 Do not commit build artifacts, local configuration, credentials, profiling dumps, temporary data, or machine-specific files.
 
