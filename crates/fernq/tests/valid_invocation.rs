@@ -34,6 +34,24 @@ fn an_arithmetic_program_is_not_compiled() {
     );
 }
 
+/// Float literals lex, with or without a fractional part, exponent, or
+/// suffix, so the program reaches compilation.
+#[test]
+fn a_float_program_is_not_compiled() {
+    let dir = clear_test_dir("a_float_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        "fn main() {\n    let x = 1.5e3_f64;\n    let y = 2.;\n}\n",
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
 #[test]
 fn missing_input_is_not_found() {
     let dir = clear_test_dir("missing_input_is_not_found");

@@ -5,7 +5,8 @@
 //! error. It stores no tokens; retention belongs to the caller.
 //!
 //! The supported lexical surface is ASCII identifiers, strict and reserved
-//! keywords, integer literals, punctuation, and the three delimiter pairs.
+//! keywords, integer and float literals, punctuation, and the three delimiter
+//! pairs.
 //! The lexer skips a byte order mark at offset 0, a shebang at the start of
 //! the text, whitespace, and non-doc comments. Any other input ends lexing
 //! with a [`LexError`]: invalid when the text is not valid Rust, unsupported
@@ -35,6 +36,9 @@ pub(crate) enum TokenKind {
     /// An integer literal in any radix, with its suffix if any. The suffix is
     /// not checked.
     IntegerLiteral,
+    /// A floating-point literal, with its suffix if any. The suffix is not
+    /// checked.
+    FloatLiteral,
     /// A punctuation token other than a delimiter.
     Punctuation(Punctuation),
     OpenDelimiter(Delimiter),
@@ -365,8 +369,8 @@ pub(crate) enum LexErrorKind {
     Unsupported(Unsupported),
 }
 
-/// A reason the text is not valid Rust. The span of an integer literal
-/// reason starts at the literal.
+/// A reason the text is not valid Rust. The span of a numeric literal reason
+/// starts at the literal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Invalid {
     /// A character that starts no Rust token. The span is the character.
@@ -395,9 +399,9 @@ pub(crate) enum Invalid {
     /// A binary or octal literal followed by `e` or `E`. The span ends after
     /// that letter.
     RadixExponent,
-    /// A decimal literal followed by `e` or `E` and no exponent digit after
-    /// an optional sign and underscores. The span ends after the sign and
-    /// underscores.
+    /// A decimal literal, with or without a fractional part, followed by `e`
+    /// or `E` and no exponent digit after an optional sign and underscores.
+    /// The span ends after the sign and underscores.
     EmptyExponent,
 }
 
@@ -411,9 +415,6 @@ pub(crate) enum Unsupported {
     /// A raw identifier or raw string prefix: `r#` and `br#` in every
     /// edition, `cr#` from edition 2021. The span is the prefix and the `#`.
     RawPrefix,
-    /// A floating-point literal. The span runs from the start of the literal
-    /// to the `.` or the exponent letter.
-    FloatLiteral,
 }
 
 /// A pull lexer over the stored text of one source file.
@@ -508,7 +509,7 @@ impl<'text> Lexer<'text> {
             ']' => (TokenKind::CloseDelimiter(Delimiter::Bracket), start + 1),
             '}' => (TokenKind::CloseDelimiter(Delimiter::Brace), start + 1),
             'A'..='Z' | 'a'..='z' | '_' => self.identifier_or_keyword(start)?,
-            '0'..='9' => (TokenKind::IntegerLiteral, self.integer_literal_end(start)?),
+            '0'..='9' => self.number_literal(start)?,
             '#' => {
                 self.check_reserved_guard(start)?;
                 (TokenKind::Punctuation(Punctuation::Pound), start + 1)
@@ -558,13 +559,14 @@ impl<'text> Lexer<'text> {
         Ok((kind, end))
     }
 
-    /// Returns the end of the integer literal at `start`, which is a decimal
-    /// digit, suffix included.
+    /// Returns the kind and end of the integer or float literal at `start`,
+    /// which is a decimal digit, suffix included.
     ///
-    /// The scan follows `INTEGER_LITERAL` of the Reference without
-    /// backtracking: once a radix prefix, an exponent letter, or a `.` that
-    /// continues the literal is read, the text is that form or an error.
-    fn integer_literal_end(&self, start: usize) -> Result<usize, LexError> {
+    /// The scan follows `INTEGER_LITERAL` and `FLOAT_LITERAL` of the
+    /// Reference without backtracking: once a radix prefix, an exponent
+    /// letter, or a `.` that continues the literal is read, the text is that
+    /// form or an error.
+    fn number_literal(&self, start: usize) -> Result<(TokenKind, usize), LexError> {
         let (radix, digits) = match self.rest(start) {
             [b'0', b'b', ..] => (2, start + 2),
             [b'0', b'o', ..] => (8, start + 2),
@@ -596,25 +598,63 @@ impl<'text> Lexer<'text> {
                 let kind = LexErrorKind::Invalid(Invalid::RadixExponent);
                 return Err(self.error(kind, start, end + 1));
             }
-            (10, [b'e' | b'E', ..]) => return Err(self.exponent_error(start, end)),
+            (10, [b'e' | b'E', ..]) => return self.float_exponent(start, end),
             (_, [b'.', after @ ..]) => match after.first() {
                 // `..`, a field, or a method call: the literal ends before the `.`.
                 Some(&next) if next == b'.' || next == b'_' || next.is_ascii_alphabetic() => {
-                    return Ok(end);
+                    return Ok((TokenKind::IntegerLiteral, end));
+                }
+                Some(next) if radix == 10 && next.is_ascii_digit() => {
+                    let fraction_end = end + 1 + self.count_while(end + 1, is_decimal_continue);
+                    return match self.rest(fraction_end).first() {
+                        Some(b'e' | b'E') => self.float_exponent(start, fraction_end),
+                        _ => self.suffixed(TokenKind::FloatLiteral, fraction_end),
+                    };
                 }
                 _ => {
                     self.check_extent_end(end + 1)?;
-                    let kind = if radix == 10 {
-                        LexErrorKind::Unsupported(Unsupported::FloatLiteral)
-                    } else {
-                        LexErrorKind::Invalid(Invalid::RadixPeriod)
-                    };
-                    return Err(self.error(kind, start, end + 1));
+                    if radix != 10 {
+                        let kind = LexErrorKind::Invalid(Invalid::RadixPeriod);
+                        return Err(self.error(kind, start, end + 1));
+                    }
+                    // A `.` with no fraction digit ends the literal: it takes no suffix.
+                    return Ok((TokenKind::FloatLiteral, end + 1));
                 }
             },
             _ => {}
         }
+        self.suffixed(TokenKind::IntegerLiteral, end)
+    }
 
+    /// Returns the kind and end of the float literal at `start` whose digits,
+    /// fractional part included, end at `exponent`, an `e` or `E`.
+    ///
+    /// The exponent letter is a hard cut: without an exponent digit after its
+    /// optional sign and underscores, the text is an empty exponent.
+    fn float_exponent(
+        &self,
+        start: usize,
+        exponent: usize,
+    ) -> Result<(TokenKind, usize), LexError> {
+        let mut pos = exponent + 1;
+        if matches!(self.rest(pos).first(), Some(b'+' | b'-')) {
+            pos += 1;
+        }
+        pos += self.count_while(pos, |byte| byte == b'_');
+        if !self.rest(pos).first().is_some_and(u8::is_ascii_digit) {
+            let kind = LexErrorKind::Invalid(Invalid::EmptyExponent);
+            return Err(self.error(kind, start, pos));
+        }
+        let end = pos + self.count_while(pos, is_decimal_continue);
+        self.suffixed(TokenKind::FloatLiteral, end)
+    }
+
+    /// Returns `kind` and the end of the numeric literal whose digits end at
+    /// `end`, after the suffix that an ASCII letter at `end` starts.
+    ///
+    /// Every ASCII letter starts a suffix here. A caller whose suffix cannot
+    /// start with `e` or `E` handles that letter before the call.
+    fn suffixed(&self, kind: TokenKind, end: usize) -> Result<(TokenKind, usize), LexError> {
         let suffix_len = match self.rest(end).first() {
             Some(byte) if byte.is_ascii_alphabetic() => {
                 self.count_while(end, is_identifier_continue)
@@ -622,25 +662,7 @@ impl<'text> Lexer<'text> {
             _ => 0,
         };
         self.check_extent_end(end + suffix_len)?;
-        Ok(end + suffix_len)
-    }
-
-    /// Returns the error for the decimal literal at `start` whose digits end
-    /// at `exponent`, an `e` or `E`: a float literal when an exponent digit
-    /// follows its optional sign and underscores, an empty exponent otherwise.
-    fn exponent_error(&self, start: usize, exponent: usize) -> LexError {
-        let mut pos = exponent + 1;
-        if matches!(self.rest(pos).first(), Some(b'+' | b'-')) {
-            pos += 1;
-        }
-        pos += self.count_while(pos, |byte| byte == b'_');
-        if self.rest(pos).first().is_some_and(u8::is_ascii_digit) {
-            let kind = LexErrorKind::Unsupported(Unsupported::FloatLiteral);
-            self.error(kind, start, exponent + 1)
-        } else {
-            let kind = LexErrorKind::Invalid(Invalid::EmptyExponent);
-            self.error(kind, start, pos)
-        }
+        Ok((kind, end + suffix_len))
     }
 
     /// From edition 2024, rejects the run of `#` at `start` when it is longer
@@ -812,6 +834,11 @@ fn is_block_doc_comment(rest: &[u8]) -> bool {
 
 fn is_identifier_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Whether `byte` continues a `DEC_LITERAL`: a decimal digit or `_`.
+fn is_decimal_continue(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte == b'_'
 }
 
 /// Whether `c` is Rust whitespace, `[lex.whitespace]`.
@@ -1051,6 +1078,10 @@ mod tests {
 
     fn int(lo: usize, hi: usize) -> Result<Token, LexError> {
         token(TokenKind::IntegerLiteral, lo, hi)
+    }
+
+    fn float(lo: usize, hi: usize) -> Result<Token, LexError> {
+        token(TokenKind::FloatLiteral, lo, hi)
     }
 
     fn invalid_at(reason: Invalid, lo: usize, hi: usize) -> Result<Token, LexError> {
@@ -1735,7 +1766,9 @@ mod tests {
         for (text, dot, after) in [
             ("1.foo", 1, ident(2, 5)),
             ("1._x", 1, ident(2, 4)),
+            ("1._", 1, keyword(Keyword::Underscore, 2, 3)),
             ("1.e3", 1, ident(2, 4)),
+            ("1.f32", 1, ident(2, 5)),
             ("0b1.foo", 3, ident(4, 7)),
             ("0x1._", 3, keyword(Keyword::Underscore, 4, 5)),
             ("1u8.0", 3, int(4, 5)),
@@ -1809,25 +1842,139 @@ mod tests {
     }
 
     #[test]
-    fn a_float_literal_is_unsupported_from_the_literal_start() {
-        for (text, hi) in [
-            ("1.", 2),
-            ("1.0", 2),
-            ("1. ", 2),
-            ("1.\u{2028}", 2),
-            ("1.;", 2),
-            ("12_.5", 4),
-            ("1e3", 2),
-            ("1E+3", 2),
-            ("1e_3", 2),
-            ("1.0e-3", 2),
-            ("1_e3", 3),
+    fn every_float_literal_form_is_one_token() {
+        for text in [
+            "1.0",
+            "1.",
+            "0.1",
+            "1e3",
+            "1E+3",
+            "1e-3",
+            "1e_3",
+            "1e+_3",
+            "1_e3",
+            "12_.5",
+            "1_000.000_1",
+            "1.0e10",
+            "1.0e-3",
+            "0e0",
+            "00.5",
+            "1.0_e3",
+            "1.0e3_f32",
+            "1.0f32",
+            "1.0_f64",
+            "1e3f32",
+            "2e5e6",
+            "1.0e3e",
+            "1.0suffix",
+            "1.0x",
+            "1.0E3x_1",
+            "340282366920938463463374607431768211456.0",
         ] {
+            for edition in [Edition::E2015, Edition::E2024] {
+                assert_eq!(
+                    lex_in(text, edition),
+                    vec![float(0, text.len()), end(text.len())],
+                    "{text:?} in {edition:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_float_literal_ends_where_no_digit_exponent_or_suffix_continues_it() {
+        for edition in [Edition::E2015, Edition::E2024] {
             assert_eq!(
-                lex(text),
-                vec![unsupported_at(Unsupported::FloatLiteral, 0, hi)],
-                "{text:?}"
+                lex_in("1. ", edition),
+                vec![float(0, 2), end(3)],
+                "{edition:?}"
             );
+        }
+        assert_eq!(lex("1.\u{2028}"), vec![float(0, 2), end(5)]);
+        assert_eq!(
+            lex("1.;"),
+            vec![float(0, 2), punct(Punctuation::Semi, 2, 3), end(3)]
+        );
+        assert_eq!(
+            lex("1.+2"),
+            vec![
+                float(0, 2),
+                punct(Punctuation::Plus, 2, 3),
+                int(3, 4),
+                end(4)
+            ]
+        );
+        assert_eq!(lex("1.0 f32"), vec![float(0, 3), ident(4, 7), end(7)]);
+        assert_eq!(
+            lex("1e3-2"),
+            vec![
+                float(0, 3),
+                punct(Punctuation::Minus, 3, 4),
+                int(4, 5),
+                end(5)
+            ]
+        );
+        assert_eq!(
+            lex("1.0.0"),
+            vec![
+                float(0, 3),
+                punct(Punctuation::Dot, 3, 4),
+                int(4, 5),
+                end(5)
+            ]
+        );
+        assert_eq!(
+            lex("1.0..2"),
+            vec![
+                float(0, 3),
+                punct(Punctuation::DotDot, 3, 5),
+                int(5, 6),
+                end(6)
+            ]
+        );
+        assert_eq!(
+            lex("1.0.x"),
+            vec![
+                float(0, 3),
+                punct(Punctuation::Dot, 3, 4),
+                ident(4, 5),
+                end(5)
+            ]
+        );
+        assert_eq!(
+            lex("t.0.1"),
+            vec![
+                ident(0, 1),
+                punct(Punctuation::Dot, 1, 2),
+                float(2, 5),
+                end(5)
+            ]
+        );
+        assert_eq!(
+            lex("1.0#"),
+            vec![float(0, 3), punct(Punctuation::Pound, 3, 4), end(4)]
+        );
+    }
+
+    #[test]
+    fn an_empty_float_exponent_is_invalid_from_the_literal_start() {
+        for (text, hi) in [
+            ("1.0e", 4),
+            ("1.0e+", 5),
+            ("1.0E_", 5),
+            ("1.0em", 4),
+            ("1.0e-__x", 7),
+            ("1.0e.5", 4),
+            ("1.0eé", 4),
+            ("1_.0_E+", 7),
+        ] {
+            for edition in [Edition::E2015, Edition::E2024] {
+                assert_eq!(
+                    lex_in(&format!("x {text}"), edition),
+                    vec![ident(0, 1), invalid_at(Invalid::EmptyExponent, 2, 2 + hi)],
+                    "{text:?} in {edition:?}"
+                );
+            }
         }
     }
 
@@ -1841,6 +1988,11 @@ mod tests {
             ("1_é", 'é', 2),
             ("1ué", 'é', 2),
             ("1.é", 'é', 2),
+            ("1.0é", 'é', 3),
+            ("1.0_é", 'é', 4),
+            ("1e3é", 'é', 3),
+            ("1.0f32é", 'é', 6),
+            ("1e3f32é", 'é', 6),
             ("0x1.é", 'é', 4),
             ("0b1é", 'é', 3),
             ("b\"x\"", '"', 1),
@@ -1947,16 +2099,16 @@ mod tests {
     }
 
     /// Lexes every text from an alphabet of comment, shebang, delimiter,
-    /// identifier, digit, literal, punctuation, quote, whitespace, invalid,
-    /// and multibyte characters: up to five characters in edition 2024, up to
-    /// four in the earlier editions. Checks that each result lies in the text
+    /// identifier, digit, literal, exponent sign, punctuation, quote,
+    /// whitespace, invalid, and multibyte characters: up to five characters in
+    /// edition 2024, up to four in the earlier editions. Checks that each result lies in the text
     /// after the previous one and that each token other than the end of file
     /// is not empty.
     #[test]
     fn every_short_text_lexes_to_spans_inside_the_text() {
-        const ALPHABET: [char; 21] = [
+        const ALPHABET: [char; 22] = [
             '/', '*', '!', '#', '[', '\n', 'a', ' ', 'é', '\u{FEFF}', '`', '0', '1', '.', 'e', 'x',
-            '_', '<', '-', '=', '"',
+            '_', '<', '-', '=', '"', '+',
         ];
         let mut sources = SourceTable::default();
         let id = sources.add_text("main.rs", "");
@@ -1981,7 +2133,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(count, 3 * 204_205 + 4_288_306);
+        assert_eq!(count, 3 * 245_411 + 5_399_043);
     }
 
     /// Runs `lexer` over `text` to its end and checks every span.

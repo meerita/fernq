@@ -213,7 +213,6 @@ fn unsupported_message(reason: Unsupported) -> String {
         Unsupported::RawPrefix => {
             "raw identifiers and raw string literals are not supported".to_owned()
         }
-        Unsupported::FloatLiteral => "floating-point literals are not supported".to_owned(),
     }
 }
 
@@ -342,6 +341,7 @@ mod tests {
             "0x1.",
             "0b1e",
             "2e",
+            "1.0em",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
@@ -352,11 +352,11 @@ mod tests {
     #[test]
     fn unsupported_input_is_unsupported_syntax_with_a_location() {
         for text in [
-            "fn main() { 1.5 }",
+            "fn main() { 1.5é }",
             "/// doc",
             "fn café() {}",
             "r#fn",
-            "1e3",
+            "1e3é",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(
