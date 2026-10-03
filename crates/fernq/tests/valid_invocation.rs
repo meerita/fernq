@@ -20,6 +20,20 @@ fn existing_input_is_not_compiled() {
     );
 }
 
+/// Integer literals and punctuation lex, so the program reaches compilation.
+#[test]
+fn an_arithmetic_program_is_not_compiled() {
+    let dir = clear_test_dir("an_arithmetic_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(&input, "fn main() {\n    let x: u32 = 1 + 2 * 3;\n}\n")
+        .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
 #[test]
 fn missing_input_is_not_found() {
     let dir = clear_test_dir("missing_input_is_not_found");

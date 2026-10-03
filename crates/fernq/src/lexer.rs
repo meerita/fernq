@@ -5,13 +5,16 @@
 //! error. It stores no tokens; retention belongs to the caller.
 //!
 //! The supported lexical surface is ASCII identifiers, strict and reserved
-//! keywords, and the three delimiter pairs. The lexer skips a byte order mark
-//! at offset 0, a shebang at the start of the text, whitespace, and non-doc
-//! comments. Any other start ends lexing with a [`LexError`]: invalid when no
-//! Rust token can start there, unsupported otherwise. The lexer does not pair
-//! delimiters.
+//! keywords, integer literals, punctuation, and the three delimiter pairs.
+//! The lexer skips a byte order mark at offset 0, a shebang at the start of
+//! the text, whitespace, and non-doc comments. Any other input ends lexing
+//! with a [`LexError`]: invalid when the text is not valid Rust, unsupported
+//! otherwise. The lexer does not pair delimiters and does not interpret
+//! literals.
 //!
-//! Every span is in the coordinates of the text as stored.
+//! The lexer returns no token whose extent an unsupported character directly
+//! after it could still change. Every span is in the coordinates of the text
+//! as stored.
 
 use crate::edition::Edition;
 use crate::source::{ByteOffset, SourceId, Span};
@@ -29,6 +32,11 @@ pub(crate) enum TokenKind {
     /// of the source. Weak keywords are identifiers.
     Identifier,
     Keyword(Keyword),
+    /// An integer literal in any radix, with its suffix if any. The suffix is
+    /// not checked.
+    IntegerLiteral,
+    /// A punctuation token other than a delimiter.
+    Punctuation(Punctuation),
     OpenDelimiter(Delimiter),
     CloseDelimiter(Delimiter),
     /// The end of the text. Its span is the empty span at the text length.
@@ -43,6 +51,161 @@ pub(crate) enum Delimiter {
     Bracket,
     /// `{` and `}`.
     Brace,
+}
+
+/// A punctuation token of the Rust Reference other than a delimiter. Each is
+/// one token, compound or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Punctuation {
+    /// `+`.
+    Plus,
+    /// `-`.
+    Minus,
+    /// `*`.
+    Star,
+    /// `/`.
+    Slash,
+    /// `%`.
+    Percent,
+    /// `^`.
+    Caret,
+    /// `!`.
+    Not,
+    /// `&`.
+    And,
+    /// `|`.
+    Or,
+    /// `&&`.
+    AndAnd,
+    /// `||`.
+    OrOr,
+    /// `<<`.
+    Shl,
+    /// `>>`.
+    Shr,
+    /// `+=`.
+    PlusEq,
+    /// `-=`.
+    MinusEq,
+    /// `*=`.
+    StarEq,
+    /// `/=`.
+    SlashEq,
+    /// `%=`.
+    PercentEq,
+    /// `^=`.
+    CaretEq,
+    /// `&=`.
+    AndEq,
+    /// `|=`.
+    OrEq,
+    /// `<<=`.
+    ShlEq,
+    /// `>>=`.
+    ShrEq,
+    /// `=`.
+    Eq,
+    /// `==`.
+    EqEq,
+    /// `!=`.
+    Ne,
+    /// `>`.
+    Gt,
+    /// `<`.
+    Lt,
+    /// `>=`.
+    Ge,
+    /// `<=`.
+    Le,
+    /// `@`.
+    At,
+    /// `.`.
+    Dot,
+    /// `..`.
+    DotDot,
+    /// `...`.
+    DotDotDot,
+    /// `..=`.
+    DotDotEq,
+    /// `,`.
+    Comma,
+    /// `;`.
+    Semi,
+    /// `:`.
+    Colon,
+    /// `::`.
+    PathSep,
+    /// `->`.
+    RArrow,
+    /// `=>`.
+    FatArrow,
+    /// `<-`.
+    LArrow,
+    /// `#`.
+    Pound,
+    /// `$`.
+    Dollar,
+    /// `?`.
+    Question,
+    /// `~`.
+    Tilde,
+}
+
+impl Punctuation {
+    /// Returns the longest punctuation token at the start of `rest` and its
+    /// length in bytes, or `None` when `rest` starts with no punctuation.
+    fn at_start(rest: &[u8]) -> Option<(Self, usize)> {
+        let found = match rest {
+            [b'.', b'.', b'.', ..] => (Self::DotDotDot, 3),
+            [b'.', b'.', b'=', ..] => (Self::DotDotEq, 3),
+            [b'<', b'<', b'=', ..] => (Self::ShlEq, 3),
+            [b'>', b'>', b'=', ..] => (Self::ShrEq, 3),
+            [b'!', b'=', ..] => (Self::Ne, 2),
+            [b'%', b'=', ..] => (Self::PercentEq, 2),
+            [b'&', b'&', ..] => (Self::AndAnd, 2),
+            [b'&', b'=', ..] => (Self::AndEq, 2),
+            [b'*', b'=', ..] => (Self::StarEq, 2),
+            [b'+', b'=', ..] => (Self::PlusEq, 2),
+            [b'-', b'=', ..] => (Self::MinusEq, 2),
+            [b'-', b'>', ..] => (Self::RArrow, 2),
+            [b'.', b'.', ..] => (Self::DotDot, 2),
+            [b'/', b'=', ..] => (Self::SlashEq, 2),
+            [b':', b':', ..] => (Self::PathSep, 2),
+            [b'<', b'-', ..] => (Self::LArrow, 2),
+            [b'<', b'<', ..] => (Self::Shl, 2),
+            [b'<', b'=', ..] => (Self::Le, 2),
+            [b'=', b'=', ..] => (Self::EqEq, 2),
+            [b'=', b'>', ..] => (Self::FatArrow, 2),
+            [b'>', b'=', ..] => (Self::Ge, 2),
+            [b'>', b'>', ..] => (Self::Shr, 2),
+            [b'^', b'=', ..] => (Self::CaretEq, 2),
+            [b'|', b'=', ..] => (Self::OrEq, 2),
+            [b'|', b'|', ..] => (Self::OrOr, 2),
+            [b'!', ..] => (Self::Not, 1),
+            [b'#', ..] => (Self::Pound, 1),
+            [b'$', ..] => (Self::Dollar, 1),
+            [b'%', ..] => (Self::Percent, 1),
+            [b'&', ..] => (Self::And, 1),
+            [b'*', ..] => (Self::Star, 1),
+            [b'+', ..] => (Self::Plus, 1),
+            [b',', ..] => (Self::Comma, 1),
+            [b'-', ..] => (Self::Minus, 1),
+            [b'.', ..] => (Self::Dot, 1),
+            [b'/', ..] => (Self::Slash, 1),
+            [b':', ..] => (Self::Colon, 1),
+            [b';', ..] => (Self::Semi, 1),
+            [b'<', ..] => (Self::Lt, 1),
+            [b'=', ..] => (Self::Eq, 1),
+            [b'>', ..] => (Self::Gt, 1),
+            [b'?', ..] => (Self::Question, 1),
+            [b'@', ..] => (Self::At, 1),
+            [b'^', ..] => (Self::Caret, 1),
+            [b'|', ..] => (Self::Or, 1),
+            [b'~', ..] => (Self::Tilde, 1),
+            _ => return None,
+        };
+        Some(found)
+    }
 }
 
 /// A strict or reserved keyword of the Rust Reference for Rust 1.99.0.
@@ -195,13 +358,15 @@ impl LexError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LexErrorKind {
-    /// No Rust token can start at the span, so the text is not valid Rust.
+    /// The text at the span is not valid Rust in the edition of the source.
     Invalid(Invalid),
-    /// Input outside the supported lexical surface starts at the span. The
-    /// text may or may not be valid Rust.
+    /// Input outside the supported lexical surface is at the span. The text
+    /// may or may not be valid Rust.
     Unsupported(Unsupported),
 }
 
+/// A reason the text is not valid Rust. The span of an integer literal
+/// reason starts at the literal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Invalid {
     /// A character that starts no Rust token. The span is the character.
@@ -209,15 +374,46 @@ pub(crate) enum Invalid {
     /// A block comment without its closing `*/`. The span runs from the
     /// outermost `/*` to the end of the text.
     UnterminatedBlockComment,
+    /// From edition 2021, an identifier or keyword directly followed by `#`.
+    /// The span is the identifier and the `#`.
+    ReservedPrefix,
+    /// From edition 2024, two or more `#` in a row not followed by `"`. The
+    /// span is the run of `#`.
+    ReservedPounds,
+    /// From edition 2024, a run of `#` directly followed by `"`. The span is
+    /// the run of `#`.
+    ReservedGuardedString,
+    /// A binary or octal literal followed by a decimal digit outside its
+    /// radix. The span ends after that digit.
+    DigitOutOfRadix,
+    /// A radix prefix `0b`, `0o`, or `0x` with no digit of the radix after
+    /// its underscores. The span is the prefix and the underscores.
+    NoRadixDigits,
+    /// A binary, octal, or hexadecimal literal without a suffix followed by
+    /// `.` that starts no other token after it. The span ends after the `.`.
+    RadixPeriod,
+    /// A binary or octal literal followed by `e` or `E`. The span ends after
+    /// that letter.
+    RadixExponent,
+    /// A decimal literal followed by `e` or `E` and no exponent digit after
+    /// an optional sign and underscores. The span ends after the sign and
+    /// underscores.
+    EmptyExponent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unsupported {
-    /// A character that starts input the lexer does not support. The span is
-    /// the character.
+    /// A character the lexer does not support, where it starts a token or
+    /// where it could extend the token before it. The span is the character.
     Character(char),
     /// A doc comment. The span is its opening `///`, `//!`, `/**`, or `/*!`.
     DocComment,
+    /// A raw identifier or raw string prefix: `r#` and `br#` in every
+    /// edition, `cr#` from edition 2021. The span is the prefix and the `#`.
+    RawPrefix,
+    /// A floating-point literal. The span runs from the start of the literal
+    /// to the `.` or the exponent letter.
+    FloatLiteral,
 }
 
 /// A pull lexer over the stored text of one source file.
@@ -311,27 +507,192 @@ impl<'text> Lexer<'text> {
             ')' => (TokenKind::CloseDelimiter(Delimiter::Parenthesis), start + 1),
             ']' => (TokenKind::CloseDelimiter(Delimiter::Bracket), start + 1),
             '}' => (TokenKind::CloseDelimiter(Delimiter::Brace), start + 1),
-            'A'..='Z' | 'a'..='z' | '_' => {
-                let identifier = self
-                    .rest(start)
-                    .split(|&byte| !is_identifier_continue(byte))
-                    .next()
-                    .unwrap_or_default();
-                let kind = Keyword::from_text(identifier, self.edition)
-                    .map_or(TokenKind::Identifier, TokenKind::Keyword);
-                (kind, start + identifier.len())
+            'A'..='Z' | 'a'..='z' | '_' => self.identifier_or_keyword(start)?,
+            '0'..='9' => (TokenKind::IntegerLiteral, self.integer_literal_end(start)?),
+            '#' => {
+                self.check_reserved_guard(start)?;
+                (TokenKind::Punctuation(Punctuation::Pound), start + 1)
             }
-            '`' | '\\' | '\u{0}'..='\u{8}' | '\u{E}'..='\u{1F}' | '\u{7F}' => {
-                let kind = LexErrorKind::Invalid(Invalid::Character(c));
-                return Err(self.error(kind, start, start + c.len_utf8()));
-            }
-            _ => {
-                let kind = LexErrorKind::Unsupported(Unsupported::Character(c));
-                return Err(self.error(kind, start, start + c.len_utf8()));
-            }
+            _ => match Punctuation::at_start(self.rest(start)) {
+                Some((punctuation, len)) => (TokenKind::Punctuation(punctuation), start + len),
+                None => return Err(self.character_error(c, start)),
+            },
         };
         self.pos = end;
         Ok(Self::token(kind, start, end))
+    }
+
+    /// Returns the kind and end of the identifier or keyword at `start`.
+    fn identifier_or_keyword(&self, start: usize) -> Result<(TokenKind, usize), LexError> {
+        let identifier = self
+            .rest(start)
+            .split(|&byte| !is_identifier_continue(byte))
+            .next()
+            .unwrap_or_default();
+        let end = start + identifier.len();
+        match self.rest(end).first() {
+            Some(b'#') => {
+                let is_raw_prefix = match identifier {
+                    b"r" | b"br" => true,
+                    b"cr" => self.edition >= Edition::E2021,
+                    _ => false,
+                };
+                if is_raw_prefix {
+                    let kind = LexErrorKind::Unsupported(Unsupported::RawPrefix);
+                    return Err(self.error(kind, start, end + 1));
+                }
+                if self.edition >= Edition::E2021 {
+                    let kind = LexErrorKind::Invalid(Invalid::ReservedPrefix);
+                    return Err(self.error(kind, start, end + 1));
+                }
+            }
+            // A quote can make the identifier a literal prefix or a reserved prefix.
+            Some(&quote @ (b'"' | b'\'')) => {
+                let kind = LexErrorKind::Unsupported(Unsupported::Character(char::from(quote)));
+                return Err(self.error(kind, end, end + 1));
+            }
+            _ => self.check_extent_end(end)?,
+        }
+        let kind = Keyword::from_text(identifier, self.edition)
+            .map_or(TokenKind::Identifier, TokenKind::Keyword);
+        Ok((kind, end))
+    }
+
+    /// Returns the end of the integer literal at `start`, which is a decimal
+    /// digit, suffix included.
+    ///
+    /// The scan follows `INTEGER_LITERAL` of the Reference without
+    /// backtracking: once a radix prefix, an exponent letter, or a `.` that
+    /// continues the literal is read, the text is that form or an error.
+    fn integer_literal_end(&self, start: usize) -> Result<usize, LexError> {
+        let (radix, digits) = match self.rest(start) {
+            [b'0', b'b', ..] => (2, start + 2),
+            [b'0', b'o', ..] => (8, start + 2),
+            [b'0', b'x', ..] => (16, start + 2),
+            _ => (10, start),
+        };
+        let is_digit = |byte: u8| char::from(byte).is_digit(radix);
+        let first_digit = digits + self.count_while(digits, |byte| byte == b'_');
+        match self.rest(first_digit).first() {
+            Some(&byte) if is_digit(byte) => {}
+            Some(byte) if byte.is_ascii_digit() => {
+                let kind = LexErrorKind::Invalid(Invalid::DigitOutOfRadix);
+                return Err(self.error(kind, start, first_digit + 1));
+            }
+            _ => {
+                let kind = LexErrorKind::Invalid(Invalid::NoRadixDigits);
+                return Err(self.error(kind, start, first_digit));
+            }
+        }
+        let end =
+            first_digit + self.count_while(first_digit, |byte| is_digit(byte) || byte == b'_');
+
+        match (radix, self.rest(end)) {
+            (2 | 8, [next, ..]) if next.is_ascii_digit() => {
+                let kind = LexErrorKind::Invalid(Invalid::DigitOutOfRadix);
+                return Err(self.error(kind, start, end + 1));
+            }
+            (2 | 8, [b'e' | b'E', ..]) => {
+                let kind = LexErrorKind::Invalid(Invalid::RadixExponent);
+                return Err(self.error(kind, start, end + 1));
+            }
+            (10, [b'e' | b'E', ..]) => return Err(self.exponent_error(start, end)),
+            (_, [b'.', after @ ..]) => match after.first() {
+                // `..`, a field, or a method call: the literal ends before the `.`.
+                Some(&next) if next == b'.' || next == b'_' || next.is_ascii_alphabetic() => {
+                    return Ok(end);
+                }
+                _ => {
+                    self.check_extent_end(end + 1)?;
+                    let kind = if radix == 10 {
+                        LexErrorKind::Unsupported(Unsupported::FloatLiteral)
+                    } else {
+                        LexErrorKind::Invalid(Invalid::RadixPeriod)
+                    };
+                    return Err(self.error(kind, start, end + 1));
+                }
+            },
+            _ => {}
+        }
+
+        let suffix_len = match self.rest(end).first() {
+            Some(byte) if byte.is_ascii_alphabetic() => {
+                self.count_while(end, is_identifier_continue)
+            }
+            _ => 0,
+        };
+        self.check_extent_end(end + suffix_len)?;
+        Ok(end + suffix_len)
+    }
+
+    /// Returns the error for the decimal literal at `start` whose digits end
+    /// at `exponent`, an `e` or `E`: a float literal when an exponent digit
+    /// follows its optional sign and underscores, an empty exponent otherwise.
+    fn exponent_error(&self, start: usize, exponent: usize) -> LexError {
+        let mut pos = exponent + 1;
+        if matches!(self.rest(pos).first(), Some(b'+' | b'-')) {
+            pos += 1;
+        }
+        pos += self.count_while(pos, |byte| byte == b'_');
+        if self.rest(pos).first().is_some_and(u8::is_ascii_digit) {
+            let kind = LexErrorKind::Unsupported(Unsupported::FloatLiteral);
+            self.error(kind, start, exponent + 1)
+        } else {
+            let kind = LexErrorKind::Invalid(Invalid::EmptyExponent);
+            self.error(kind, start, pos)
+        }
+    }
+
+    /// From edition 2024, rejects the run of `#` at `start` when it is longer
+    /// than one `#` or directly followed by `"`.
+    fn check_reserved_guard(&self, start: usize) -> Result<(), LexError> {
+        if self.edition < Edition::E2024 {
+            return Ok(());
+        }
+        let end = start + self.count_while(start, |byte| byte == b'#');
+        let reason = if self.rest(end).first() == Some(&b'"') {
+            Invalid::ReservedGuardedString
+        } else if end - start > 1 {
+            Invalid::ReservedPounds
+        } else {
+            return Ok(());
+        };
+        Err(self.error(LexErrorKind::Invalid(reason), start, end))
+    }
+
+    /// Rejects a non-ASCII character other than whitespace at `pos`, directly
+    /// after a token that an identifier character could extend.
+    ///
+    /// Fernq does not classify non-ASCII identifier characters, so such a
+    /// token is not returned.
+    fn check_extent_end(&self, pos: usize) -> Result<(), LexError> {
+        match self.char_at(pos) {
+            Some(c) if !c.is_ascii() && !is_whitespace(c) => {
+                let kind = LexErrorKind::Unsupported(Unsupported::Character(c));
+                Err(self.error(kind, pos, pos + c.len_utf8()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Returns the error for `c` at `pos`, a character that starts no
+    /// supported token.
+    fn character_error(&self, c: char, pos: usize) -> LexError {
+        let kind = match c {
+            '`' | '\\' | '\u{0}'..='\u{8}' | '\u{E}'..='\u{1F}' | '\u{7F}' => {
+                LexErrorKind::Invalid(Invalid::Character(c))
+            }
+            _ => LexErrorKind::Unsupported(Unsupported::Character(c)),
+        };
+        self.error(kind, pos, pos + c.len_utf8())
+    }
+
+    /// The number of bytes from `pos` that satisfy `predicate`.
+    fn count_while(&self, pos: usize, predicate: impl Fn(u8) -> bool) -> usize {
+        self.rest(pos)
+            .iter()
+            .take_while(|&&byte| predicate(byte))
+            .count()
     }
 
     /// Returns the offset after the whitespace and non-doc comments at `pos`.
@@ -535,6 +896,57 @@ mod tests {
         ("gen", Keyword::Gen, Edition::E2024),
     ];
 
+    /// Every punctuation token of the Reference other than the delimiters:
+    /// 25 compound, then 21 single.
+    const PUNCTUATION: [(&str, Punctuation); 46] = [
+        ("...", Punctuation::DotDotDot),
+        ("..=", Punctuation::DotDotEq),
+        ("<<=", Punctuation::ShlEq),
+        (">>=", Punctuation::ShrEq),
+        ("!=", Punctuation::Ne),
+        ("%=", Punctuation::PercentEq),
+        ("&&", Punctuation::AndAnd),
+        ("&=", Punctuation::AndEq),
+        ("*=", Punctuation::StarEq),
+        ("+=", Punctuation::PlusEq),
+        ("-=", Punctuation::MinusEq),
+        ("->", Punctuation::RArrow),
+        ("..", Punctuation::DotDot),
+        ("/=", Punctuation::SlashEq),
+        ("::", Punctuation::PathSep),
+        ("<-", Punctuation::LArrow),
+        ("<<", Punctuation::Shl),
+        ("<=", Punctuation::Le),
+        ("==", Punctuation::EqEq),
+        ("=>", Punctuation::FatArrow),
+        (">=", Punctuation::Ge),
+        (">>", Punctuation::Shr),
+        ("^=", Punctuation::CaretEq),
+        ("|=", Punctuation::OrEq),
+        ("||", Punctuation::OrOr),
+        ("!", Punctuation::Not),
+        ("#", Punctuation::Pound),
+        ("$", Punctuation::Dollar),
+        ("%", Punctuation::Percent),
+        ("&", Punctuation::And),
+        ("*", Punctuation::Star),
+        ("+", Punctuation::Plus),
+        (",", Punctuation::Comma),
+        ("-", Punctuation::Minus),
+        (".", Punctuation::Dot),
+        ("/", Punctuation::Slash),
+        (":", Punctuation::Colon),
+        (";", Punctuation::Semi),
+        ("<", Punctuation::Lt),
+        ("=", Punctuation::Eq),
+        (">", Punctuation::Gt),
+        ("?", Punctuation::Question),
+        ("@", Punctuation::At),
+        ("^", Punctuation::Caret),
+        ("|", Punctuation::Or),
+        ("~", Punctuation::Tilde),
+    ];
+
     /// The weak keywords that are identifiers in form. `'static` is a
     /// lifetime and `dyn` is weak only in 2015.
     const WEAK: [&str; 4] = ["macro_rules", "raw", "safe", "union"];
@@ -631,6 +1043,22 @@ mod tests {
 
     fn close(delimiter: Delimiter, lo: usize) -> Result<Token, LexError> {
         token(TokenKind::CloseDelimiter(delimiter), lo, lo + 1)
+    }
+
+    fn punct(punctuation: Punctuation, lo: usize, hi: usize) -> Result<Token, LexError> {
+        token(TokenKind::Punctuation(punctuation), lo, hi)
+    }
+
+    fn int(lo: usize, hi: usize) -> Result<Token, LexError> {
+        token(TokenKind::IntegerLiteral, lo, hi)
+    }
+
+    fn invalid_at(reason: Invalid, lo: usize, hi: usize) -> Result<Token, LexError> {
+        error(LexErrorKind::Invalid(reason), lo, hi)
+    }
+
+    fn unsupported_at(reason: Unsupported, lo: usize, hi: usize) -> Result<Token, LexError> {
+        error(LexErrorKind::Unsupported(reason), lo, hi)
     }
 
     /// The tokens of `fn main() {}` when `fn` starts at `lo`.
@@ -848,12 +1276,31 @@ mod tests {
     }
 
     #[test]
-    fn a_shebang_after_the_start_is_unsupported() {
+    fn a_shebang_after_the_start_is_punctuation() {
+        let shebang = [
+            punct(Punctuation::Pound, 1, 2),
+            punct(Punctuation::Not, 2, 3),
+            punct(Punctuation::Slash, 3, 4),
+            ident(4, 7),
+            punct(Punctuation::Slash, 7, 8),
+            ident(8, 11),
+            punct(Punctuation::Slash, 11, 12),
+            ident(12, 15),
+            ident(16, 19),
+        ];
         assert_eq!(
             lex("\n#!/usr/bin/env run\nfn main() {}\n"),
-            vec![unsupported('#', 1)]
+            with_end([shebang.to_vec(), fn_main_at(20)].concat(), end(33))
         );
-        assert_eq!(lex(" #!x"), vec![unsupported('#', 1)]);
+        assert_eq!(
+            lex(" #!x"),
+            vec![
+                punct(Punctuation::Pound, 1, 2),
+                punct(Punctuation::Not, 2, 3),
+                ident(3, 4),
+                end(4),
+            ]
+        );
     }
 
     #[test]
@@ -865,7 +1312,16 @@ mod tests {
             "#!// c\n[x]",
             "#! /* a /* b */ */ \t[x]",
         ] {
-            assert_eq!(lex(text), vec![unsupported('#', 0)], "{text:?}");
+            let results = lex(text);
+            assert_eq!(
+                results[..2],
+                [
+                    punct(Punctuation::Pound, 0, 1),
+                    punct(Punctuation::Not, 1, 2)
+                ],
+                "{text:?}"
+            );
+            assert_eq!(results.last(), Some(&end(text.len())), "{text:?}");
         }
     }
 
@@ -976,7 +1432,7 @@ mod tests {
 
     #[test]
     fn every_other_start_is_unsupported() {
-        let mut characters: Vec<char> = "0123456789\"'#!$%&*+,-./:;<=>?@^|~".chars().collect();
+        let mut characters = vec!['"', '\''];
         characters.extend([
             '\u{A0}',
             'é',
@@ -1004,10 +1460,437 @@ mod tests {
 
     #[test]
     fn an_identifier_ends_at_the_first_other_character() {
-        assert_eq!(lex("café"), vec![ident(0, 3), unsupported('é', 3)]);
-        assert_eq!(lex("r#fn"), vec![ident(0, 1), unsupported('#', 1)]);
-        assert_eq!(lex("b\"x\""), vec![ident(0, 1), unsupported('"', 1)]);
-        assert_eq!(lex("x/y"), vec![ident(0, 1), unsupported('/', 1)]);
+        assert_eq!(
+            lex("x/y"),
+            vec![
+                ident(0, 1),
+                punct(Punctuation::Slash, 1, 2),
+                ident(2, 3),
+                end(3)
+            ]
+        );
+        assert_eq!(
+            lex("a.b"),
+            vec![
+                ident(0, 1),
+                punct(Punctuation::Dot, 1, 2),
+                ident(2, 3),
+                end(3)
+            ]
+        );
+        assert_eq!(lex("x\u{85}y"), vec![ident(0, 1), ident(3, 4), end(4)]);
+    }
+
+    #[test]
+    fn every_punctuation_token_alone_has_its_kind_and_span() {
+        for (index, (text, punctuation)) in PUNCTUATION.iter().enumerate() {
+            assert_eq!(text.len() > 1, index < 25, "{text:?}");
+            assert!(
+                PUNCTUATION[index + 1..]
+                    .iter()
+                    .all(|(other, kind)| other != text && kind != punctuation),
+                "{text:?} is listed twice"
+            );
+            for edition in EDITIONS {
+                assert_eq!(
+                    lex_in(text, edition),
+                    vec![punct(*punctuation, 0, text.len()), end(text.len())],
+                    "{text:?} in {edition:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_punctuation_is_munched_from_the_left() {
+        for (text, first, split, second) in [
+            ("&&&", Punctuation::AndAnd, 2, Punctuation::And),
+            ("<<<", Punctuation::Shl, 2, Punctuation::Lt),
+            ("...=", Punctuation::DotDotDot, 3, Punctuation::Eq),
+            ("->>", Punctuation::RArrow, 2, Punctuation::Gt),
+            ("=>=", Punctuation::FatArrow, 2, Punctuation::Eq),
+            ("!==", Punctuation::Ne, 2, Punctuation::Eq),
+            (":::", Punctuation::PathSep, 2, Punctuation::Colon),
+            ("||=", Punctuation::OrOr, 2, Punctuation::Eq),
+            ("<<-", Punctuation::Shl, 2, Punctuation::Minus),
+            ("&&=", Punctuation::AndAnd, 2, Punctuation::Eq),
+            ("<<==", Punctuation::ShlEq, 3, Punctuation::Eq),
+            ("....", Punctuation::DotDotDot, 3, Punctuation::Dot),
+            ("*/", Punctuation::Star, 1, Punctuation::Slash),
+        ] {
+            assert_eq!(
+                lex(text),
+                vec![
+                    punct(first, 0, split),
+                    punct(second, split, text.len()),
+                    end(text.len())
+                ],
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_and_comments_separate_punctuation() {
+        for (text, first, second, second_lo) in [
+            ("< <", Punctuation::Lt, Punctuation::Lt, 2),
+            (": :", Punctuation::Colon, Punctuation::Colon, 2),
+            ("- >", Punctuation::Minus, Punctuation::Gt, 2),
+            ("</**/<", Punctuation::Lt, Punctuation::Lt, 5),
+            ("+//\n=", Punctuation::Plus, Punctuation::Eq, 4),
+        ] {
+            assert_eq!(
+                lex(text),
+                vec![
+                    punct(first, 0, 1),
+                    punct(second, second_lo, second_lo + 1),
+                    end(text.len())
+                ],
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_identifier_followed_by_a_pound_is_a_reserved_prefix_from_2021() {
+        for text in ["a#b", "fn#b", "_#b", "rb#b", "bc#b"] {
+            let prefix = text.len() - 2;
+            for edition in EDITIONS {
+                let expected = if edition >= Edition::E2021 {
+                    vec![invalid_at(Invalid::ReservedPrefix, 0, prefix + 1)]
+                } else {
+                    let kind = Keyword::from_text(&text.as_bytes()[..prefix], edition)
+                        .map_or(TokenKind::Identifier, TokenKind::Keyword);
+                    vec![
+                        token(kind, 0, prefix),
+                        punct(Punctuation::Pound, prefix, prefix + 1),
+                        ident(prefix + 1, prefix + 2),
+                        end(prefix + 2),
+                    ]
+                };
+                assert_eq!(lex_in(text, edition), expected, "{text:?} in {edition:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_prefixes_are_unsupported() {
+        for edition in EDITIONS {
+            assert_eq!(
+                lex_in("r#x", edition),
+                vec![unsupported_at(Unsupported::RawPrefix, 0, 2)],
+                "{edition:?}"
+            );
+            assert_eq!(
+                lex_in("br#x", edition),
+                vec![unsupported_at(Unsupported::RawPrefix, 0, 3)],
+                "{edition:?}"
+            );
+            let cr = if edition >= Edition::E2021 {
+                vec![unsupported_at(Unsupported::RawPrefix, 0, 3)]
+            } else {
+                vec![
+                    ident(0, 2),
+                    punct(Punctuation::Pound, 2, 3),
+                    ident(3, 4),
+                    end(4),
+                ]
+            };
+            assert_eq!(lex_in("cr#x", edition), cr, "{edition:?}");
+        }
+    }
+
+    #[test]
+    fn pound_runs_and_guarded_strings_are_reserved_from_2024() {
+        for edition in [Edition::E2015, Edition::E2021] {
+            assert_eq!(
+                lex_in("##", edition),
+                vec![
+                    punct(Punctuation::Pound, 0, 1),
+                    punct(Punctuation::Pound, 1, 2),
+                    end(2)
+                ],
+                "{edition:?}"
+            );
+            assert_eq!(
+                lex_in("#\"x\"#", edition),
+                vec![punct(Punctuation::Pound, 0, 1), unsupported('"', 1)],
+                "{edition:?}"
+            );
+        }
+        assert_eq!(lex("##"), vec![invalid_at(Invalid::ReservedPounds, 0, 2)]);
+        assert_eq!(
+            lex("x ###;"),
+            vec![ident(0, 1), invalid_at(Invalid::ReservedPounds, 2, 5)]
+        );
+        assert_eq!(
+            lex("#\"x\"#"),
+            vec![invalid_at(Invalid::ReservedGuardedString, 0, 1)]
+        );
+        assert_eq!(
+            lex("##\"x\"##"),
+            vec![invalid_at(Invalid::ReservedGuardedString, 0, 2)]
+        );
+        assert_eq!(
+            lex("# #"),
+            vec![
+                punct(Punctuation::Pound, 0, 1),
+                punct(Punctuation::Pound, 2, 3),
+                end(3)
+            ]
+        );
+        assert_eq!(
+            lex("#[x]"),
+            vec![
+                punct(Punctuation::Pound, 0, 1),
+                open(Delimiter::Bracket, 1),
+                ident(2, 3),
+                close(Delimiter::Bracket, 3),
+                end(4),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_integer_literal_form_is_one_token() {
+        for text in [
+            "0",
+            "0123",
+            "1_000",
+            "1_",
+            "98_222",
+            "0xff",
+            "0o77",
+            "0b1111_0000",
+            "0x_1",
+            "0b________1",
+            "0x01_e3",
+            "0xABCdef",
+            "1u8",
+            "123_u32",
+            "0b1u8",
+            "1suffix",
+            "0b1f32",
+            "5f32",
+            "0x1u8",
+            "0B1",
+            "0X1",
+            "1u8_x",
+            "340282366920938463463374607431768211456",
+        ] {
+            for edition in [Edition::E2015, Edition::E2024] {
+                assert_eq!(
+                    lex_in(text, edition),
+                    vec![int(0, text.len()), end(text.len())],
+                    "{text:?} in {edition:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_integer_literal_ends_where_no_digit_or_suffix_continues_it() {
+        for edition in [Edition::E2015, Edition::E2024] {
+            assert_eq!(
+                lex_in("1 u8", edition),
+                vec![int(0, 1), ident(2, 4), end(4)],
+                "{edition:?}"
+            );
+            assert_eq!(
+                lex_in("0x1e+3", edition),
+                vec![int(0, 4), punct(Punctuation::Plus, 4, 5), int(5, 6), end(6)],
+                "{edition:?}"
+            );
+        }
+        assert_eq!(
+            lex("1-1"),
+            vec![
+                int(0, 1),
+                punct(Punctuation::Minus, 1, 2),
+                int(2, 3),
+                end(3)
+            ]
+        );
+        assert_eq!(
+            lex("1#"),
+            vec![int(0, 1), punct(Punctuation::Pound, 1, 2), end(2)]
+        );
+        assert_eq!(lex("1\u{2028}2"), vec![int(0, 1), int(4, 5), end(5)]);
+        for edition in EDITIONS {
+            assert_eq!(
+                lex_in("1u8#b", edition),
+                vec![
+                    int(0, 3),
+                    punct(Punctuation::Pound, 3, 4),
+                    ident(4, 5),
+                    end(5)
+                ],
+                "{edition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_period_after_an_integer_literal_that_starts_a_token_is_punctuation() {
+        for (text, dot, after) in [
+            ("1.foo", 1, ident(2, 5)),
+            ("1._x", 1, ident(2, 4)),
+            ("1.e3", 1, ident(2, 4)),
+            ("0b1.foo", 3, ident(4, 7)),
+            ("0x1._", 3, keyword(Keyword::Underscore, 4, 5)),
+            ("1u8.0", 3, int(4, 5)),
+            ("0x1u8.0", 5, int(6, 7)),
+        ] {
+            assert_eq!(
+                lex(text),
+                vec![
+                    int(0, dot),
+                    punct(Punctuation::Dot, dot, dot + 1),
+                    after,
+                    end(text.len())
+                ],
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            lex("1..2"),
+            vec![
+                int(0, 1),
+                punct(Punctuation::DotDot, 1, 3),
+                int(3, 4),
+                end(4)
+            ]
+        );
+        assert_eq!(
+            lex("0b1..=2"),
+            vec![
+                int(0, 3),
+                punct(Punctuation::DotDotEq, 3, 6),
+                int(6, 7),
+                end(7)
+            ]
+        );
+    }
+
+    #[test]
+    fn every_invalid_integer_form_is_invalid_from_the_literal_start() {
+        for (text, reason, hi) in [
+            ("0b0102", Invalid::DigitOutOfRadix, 6),
+            ("0o1279", Invalid::DigitOutOfRadix, 6),
+            ("0b2", Invalid::DigitOutOfRadix, 3),
+            ("0b_2", Invalid::DigitOutOfRadix, 4),
+            ("0o8", Invalid::DigitOutOfRadix, 3),
+            ("0x80.0", Invalid::RadixPeriod, 5),
+            ("0b1.", Invalid::RadixPeriod, 4),
+            ("0o7. ", Invalid::RadixPeriod, 4),
+            ("0x1.\u{2028}", Invalid::RadixPeriod, 4),
+            ("0b101e", Invalid::RadixExponent, 6),
+            ("0o7e", Invalid::RadixExponent, 4),
+            ("0b1_E3", Invalid::RadixExponent, 5),
+            ("0b", Invalid::NoRadixDigits, 2),
+            ("0b_", Invalid::NoRadixDigits, 3),
+            ("0xG", Invalid::NoRadixDigits, 2),
+            ("0o", Invalid::NoRadixDigits, 2),
+            ("0bé", Invalid::NoRadixDigits, 2),
+            ("2em", Invalid::EmptyExponent, 2),
+            ("2e", Invalid::EmptyExponent, 2),
+            ("2E+", Invalid::EmptyExponent, 3),
+            ("2e-_x", Invalid::EmptyExponent, 4),
+            ("2eé", Invalid::EmptyExponent, 2),
+        ] {
+            for edition in [Edition::E2015, Edition::E2024] {
+                assert_eq!(
+                    lex_in(&format!("x {text}"), edition),
+                    vec![ident(0, 1), invalid_at(reason, 2, 2 + hi)],
+                    "{text:?} in {edition:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_float_literal_is_unsupported_from_the_literal_start() {
+        for (text, hi) in [
+            ("1.", 2),
+            ("1.0", 2),
+            ("1. ", 2),
+            ("1.\u{2028}", 2),
+            ("1.;", 2),
+            ("12_.5", 4),
+            ("1e3", 2),
+            ("1E+3", 2),
+            ("1e_3", 2),
+            ("1.0e-3", 2),
+            ("1_e3", 3),
+        ] {
+            assert_eq!(
+                lex(text),
+                vec![unsupported_at(Unsupported::FloatLiteral, 0, hi)],
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_token_is_returned_before_a_character_that_could_extend_it() {
+        for (text, c, lo) in [
+            ("café", 'é', 3),
+            ("_é", 'é', 1),
+            ("fn中", '中', 2),
+            ("1é", 'é', 1),
+            ("1_é", 'é', 2),
+            ("1ué", 'é', 2),
+            ("1.é", 'é', 2),
+            ("0x1.é", 'é', 4),
+            ("0b1é", 'é', 3),
+            ("b\"x\"", '"', 1),
+            ("b'x'", '\'', 1),
+            ("a'b", '\'', 1),
+            ("let\"", '"', 3),
+        ] {
+            assert_eq!(lex(text), vec![unsupported(c, lo)], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn punctuation_and_delimiters_are_returned_before_an_unsupported_character() {
+        assert_eq!(
+            lex("+é"),
+            vec![punct(Punctuation::Plus, 0, 1), unsupported('é', 1)]
+        );
+        assert_eq!(
+            lex("(\""),
+            vec![open(Delimiter::Parenthesis, 0), unsupported('"', 1)]
+        );
+        assert_eq!(lex("1\"x\""), vec![int(0, 1), unsupported('"', 1)]);
+    }
+
+    #[test]
+    fn lexes_an_arithmetic_program() {
+        let text = "fn main() { let x: u32 = 1 + 2 * 3; }";
+        assert_eq!(
+            lex(text),
+            vec![
+                keyword(Keyword::Fn, 0, 2),
+                ident(3, 7),
+                open(Delimiter::Parenthesis, 7),
+                close(Delimiter::Parenthesis, 8),
+                open(Delimiter::Brace, 10),
+                keyword(Keyword::Let, 12, 15),
+                ident(16, 17),
+                punct(Punctuation::Colon, 17, 18),
+                ident(19, 22),
+                punct(Punctuation::Eq, 23, 24),
+                int(25, 26),
+                punct(Punctuation::Plus, 27, 28),
+                int(29, 30),
+                punct(Punctuation::Star, 31, 32),
+                int(33, 34),
+                punct(Punctuation::Semi, 34, 35),
+                close(Delimiter::Brace, 36),
+                end(37),
+            ]
+        );
     }
 
     #[test]
@@ -1036,7 +1919,7 @@ mod tests {
     fn an_error_repeats() {
         for (text, expected) in [
             ("fn `", invalid('`', 3)),
-            ("x 1", unsupported('1', 2)),
+            ("x '", unsupported('\'', 2)),
             ("/// d", doc_comment(0)),
             ("/*", unterminated(0, 2)),
         ] {
@@ -1063,44 +1946,72 @@ mod tests {
         assert_eq!(error.kind(), LexErrorKind::Invalid(Invalid::Character('`')));
     }
 
-    /// Lexes every text of up to five characters from an alphabet of
-    /// comment, shebang, delimiter, identifier, whitespace, invalid, and
-    /// multibyte characters, and checks that each result lies in the text.
+    /// Lexes every text from an alphabet of comment, shebang, delimiter,
+    /// identifier, digit, literal, punctuation, quote, whitespace, invalid,
+    /// and multibyte characters: up to five characters in edition 2024, up to
+    /// four in the earlier editions. Checks that each result lies in the text
+    /// after the previous one and that each token other than the end of file
+    /// is not empty.
     #[test]
     fn every_short_text_lexes_to_spans_inside_the_text() {
-        const ALPHABET: [char; 11] = [
-            '/', '*', '!', '#', '[', '\n', 'a', ' ', 'é', '\u{FEFF}', '`',
+        const ALPHABET: [char; 21] = [
+            '/', '*', '!', '#', '[', '\n', 'a', ' ', 'é', '\u{FEFF}', '`', '0', '1', '.', 'e', 'x',
+            '_', '<', '-', '=', '"',
         ];
-        let mut texts = vec![String::new()];
-        for _ in 0..5 {
-            let longer: Vec<String> = texts
-                .iter()
-                .filter(|text| {
-                    text.chars().count() == texts.last().map_or(0, |last| last.chars().count())
-                })
-                .flat_map(|text| ALPHABET.iter().map(move |c| format!("{text}{c}")))
-                .collect();
-            texts.extend(longer);
-        }
-        for text in &texts {
-            let mut previous_hi = 0;
-            for result in lex(text) {
-                let span = match result {
-                    Ok(token) => token.span,
-                    Err(error) => error.span(),
-                };
-                let lo = usize::try_from(span.lo()).unwrap();
-                let hi = usize::try_from(span.hi()).unwrap();
-                assert!(
-                    previous_hi <= lo && lo <= hi && hi <= text.len(),
-                    "{text:?}: {result:?}"
-                );
-                assert!(
-                    text.is_char_boundary(lo) && text.is_char_boundary(hi),
-                    "{text:?}: {result:?}"
-                );
-                previous_hi = hi;
+        let mut sources = SourceTable::default();
+        let id = sources.add_text("main.rs", "");
+        let mut text = String::new();
+        let mut count = 0;
+        for (edition, max_len) in [
+            (Edition::E2015, 4),
+            (Edition::E2018, 4),
+            (Edition::E2021, 4),
+            (Edition::E2024, 5),
+        ] {
+            for len in 0..=max_len {
+                for index in 0..ALPHABET.len().pow(len) {
+                    text.clear();
+                    let mut rest = index;
+                    for _ in 0..len {
+                        text.push(ALPHABET[rest % ALPHABET.len()]);
+                        rest /= ALPHABET.len();
+                    }
+                    check_spans(Lexer::new(id, &text, edition), &text);
+                    count += 1;
+                }
             }
+        }
+        assert_eq!(count, 3 * 204_205 + 4_288_306);
+    }
+
+    /// Runs `lexer` over `text` to its end and checks every span.
+    fn check_spans(mut lexer: Lexer<'_>, text: &str) {
+        let edition = lexer.edition;
+        let mut previous_hi = 0;
+        loop {
+            let result = lexer.next_token();
+            let span = match result {
+                Ok(token) => token.span,
+                Err(error) => error.span(),
+            };
+            let lo = usize::try_from(span.lo()).unwrap();
+            let hi = usize::try_from(span.hi()).unwrap();
+            assert!(
+                previous_hi <= lo && lo <= hi && hi <= text.len(),
+                "{text:?} in {edition:?}: {result:?}"
+            );
+            assert!(
+                text.is_char_boundary(lo) && text.is_char_boundary(hi),
+                "{text:?} in {edition:?}: {result:?}"
+            );
+            assert!(
+                lo < hi || !matches!(result, Ok(token) if token.kind != TokenKind::EndOfFile),
+                "{text:?} in {edition:?}: {result:?}"
+            );
+            if !matches!(result, Ok(token) if token.kind != TokenKind::EndOfFile) {
+                return;
+            }
+            previous_hi = hi;
         }
     }
 }
