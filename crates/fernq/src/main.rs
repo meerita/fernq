@@ -67,8 +67,8 @@ fn unsupported(invocation: &Invocation) -> ExitCode {
     let _ = writeln!(
         io::stderr(),
         "fernq: compilation is not implemented; {} was not compiled and {} was not written",
-        invocation.input.display(),
-        invocation.output.display(),
+        invocation.input().display(),
+        invocation.output().display(),
     );
     ExitCode::FAILURE
 }

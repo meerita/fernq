@@ -6,7 +6,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The synopsis of a valid invocation.
 pub(crate) const USAGE: &str = "usage: fernq <INPUT> -o <OUTPUT>";
@@ -21,10 +21,22 @@ pub(crate) enum Command {
 }
 
 /// The paths of a valid invocation, both non-empty.
+///
+/// Only [`parse`] constructs an invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Invocation {
-    pub(crate) input: PathBuf,
-    pub(crate) output: PathBuf,
+    input: PathBuf,
+    output: PathBuf,
+}
+
+impl Invocation {
+    pub(crate) fn input(&self) -> &Path {
+        &self.input
+    }
+
+    pub(crate) fn output(&self) -> &Path {
+        &self.output
+    }
 }
 
 /// The grammar rule that a command line violates.
@@ -88,12 +100,12 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
             return Err(UsageError::HelpWithArguments);
         }
         if arg == "-o" {
-            let Some(path) = args.next() else {
-                return Err(UsageError::MissingOutputValue);
-            };
             if output.is_some() {
                 return Err(UsageError::DuplicateOutput);
             }
+            let Some(path) = args.next() else {
+                return Err(UsageError::MissingOutputValue);
+            };
             if path.is_empty() {
                 return Err(UsageError::EmptyOutput);
             }
@@ -242,6 +254,14 @@ mod tests {
     fn rejects_o_twice() {
         assert_eq!(
             parse_strs(&["main.rs", "-o", "a", "-o", "b"]),
+            Err(UsageError::DuplicateOutput)
+        );
+    }
+
+    #[test]
+    fn rejects_o_twice_even_when_the_second_has_no_value() {
+        assert_eq!(
+            parse_strs(&["main.rs", "-o", "a", "-o"]),
             Err(UsageError::DuplicateOutput)
         );
     }
