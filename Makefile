@@ -12,11 +12,17 @@ CARGO_FMT    := cargo fmt --all --check
 CARGO_CLIPPY := cargo clippy --workspace --all-targets --locked -- -D warnings
 CARGO_BENCH  := cargo bench --workspace --locked
 
+# The Unicode table generator is one source file built by rustc, outside Cargo.
+GENERATOR      := tools/unicode-tables.rs
+UNICODE_TABLES := crates/fernq/src/unicode/tables.rs
+TOOLS_DIR      := target/tools
+TOOL_CLIPPY    := clippy-driver --edition 2024 -D warnings
+
 DOCKER_RUN := docker run --rm --platform $(PLATFORM) -v "$(CURDIR):/src:ro"
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test fmt clippy bench check up linux shell check-all scan down
+.PHONY: help build test fmt clippy bench tools check unicode-tables up linux shell check-all scan down
 
 help:
 	@echo "Host checks:"
@@ -25,7 +31,10 @@ help:
 	@echo "  fmt        cargo fmt check"
 	@echo "  clippy     cargo clippy with -D warnings"
 	@echo "  bench      cargo bench"
-	@echo "  check      fmt, clippy, build, test, bench"
+	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
+	@echo "  check      fmt, clippy, build, test, bench, tools"
+	@echo "Generated source:"
+	@echo "  unicode-tables UCD=<path>  regenerate $(UNICODE_TABLES) from DerivedCoreProperties.txt"
 	@echo "Linux container ($(PLATFORM)):"
 	@echo "  up         build the $(IMAGE) image"
 	@echo "  linux      run the checks in the container"
@@ -50,12 +59,26 @@ clippy:
 bench:
 	$(CARGO_BENCH)
 
+tools:
+	mkdir -p $(TOOLS_DIR)
+	rustfmt --edition 2024 --check $(GENERATOR)
+	$(TOOL_CLIPPY) -o $(TOOLS_DIR)/unicode-tables $(GENERATOR)
+	$(TOOL_CLIPPY) --test -o $(TOOLS_DIR)/unicode-tables-test $(GENERATOR)
+	$(TOOLS_DIR)/unicode-tables-test
+
 check:
 	$(CARGO_FMT)
 	$(CARGO_CLIPPY)
 	$(CARGO_BUILD)
 	$(CARGO_TEST)
 	$(CARGO_BENCH)
+	$(MAKE) tools
+
+unicode-tables:
+	@test -n "$(UCD)" || { echo "usage: make unicode-tables UCD=<path of DerivedCoreProperties.txt>" >&2; exit 2; }
+	mkdir -p $(TOOLS_DIR)
+	rustc --edition 2024 -D warnings -O -o $(TOOLS_DIR)/unicode-tables $(GENERATOR)
+	$(TOOLS_DIR)/unicode-tables "$(UCD)" $(UNICODE_TABLES)
 
 up:
 	docker build --platform $(PLATFORM) -f $(DOCKERFILE) -t $(IMAGE) .

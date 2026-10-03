@@ -142,4 +142,6 @@ Please see [SECURITY.md](SECURITY.md) for information about reporting security v
 
 Fernq is licensed under the [Apache License 2.0](LICENSE).
 
+The Unicode character tables in `crates/fernq/src/unicode/tables.rs` are generated from Unicode Character Database data, which is distributed under the [Unicode License v3](LICENSE-UNICODE).
+
 Unless explicitly stated otherwise, contributions submitted to this repository are provided under the same license.

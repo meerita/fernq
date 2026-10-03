@@ -106,6 +106,36 @@ fn a_lifetime_program_is_not_compiled() {
     );
 }
 
+/// Non-ASCII identifiers, raw identifiers, lifetimes, and literal suffixes
+/// lex, so the program reaches compilation.
+#[test]
+fn a_non_ascii_identifier_program_is_not_compiled() {
+    let dir = clear_test_dir("a_non_ascii_identifier_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        concat!(
+            "macro_rules! m {\n",
+            "    ($($t:tt)*) => {};\n",
+            "}\n",
+            "\n",
+            "fn café<'é>(_: &'é u8) {}\n",
+            "\n",
+            "fn main() {\n",
+            "    let 東京 = 1;\n",
+            "    let r#é = 東京;\n",
+            "    m!(1é \"a\"é);\n",
+            "}\n",
+        ),
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
 #[test]
 fn missing_input_is_not_found() {
     let dir = clear_test_dir("missing_input_is_not_found");

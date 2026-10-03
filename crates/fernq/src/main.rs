@@ -8,8 +8,9 @@
 //! The driver does not own Rust semantics, the source model contract, the
 //! diagnostic structure, or the semantics of any compiler stage. Module
 //! `source` owns the source model. Module `edition` owns the edition. Module
-//! `lexer` owns tokens and lexical errors. Module `diagnostic` owns the
-//! diagnostic structure and its rendering.
+//! `lexer` owns tokens and lexical errors. Module `unicode` owns the Unicode
+//! character data and its version. Module `diagnostic` owns the diagnostic
+//! structure and its rendering.
 //!
 //! No workspace crate depends on the driver.
 //!
@@ -29,6 +30,7 @@ mod diagnostic;
 mod edition;
 mod lexer;
 mod source;
+mod unicode;
 
 use std::env;
 use std::io::{self, Write};
@@ -256,9 +258,10 @@ fn escape_message(reason: InvalidEscape) -> &'static str {
 
 fn unsupported_message(reason: Unsupported) -> String {
     match reason {
-        Unsupported::Character(c) => {
-            format!("input that contains {} is not supported", describe(c))
-        }
+        Unsupported::Character(c) => format!(
+            "an identifier, lifetime, or literal suffix that contains {} is not supported",
+            describe(c)
+        ),
         Unsupported::DocComment => "doc comments are not supported".to_owned(),
     }
 }
@@ -356,7 +359,7 @@ mod tests {
         let len = ByteOffset::try_from(13_usize).unwrap();
         kinds.push(not_implemented(input, len, Path::new("main")).kind);
         kinds.push(lex_failure(lex_error("`")).kind);
-        kinds.push(lex_failure(lex_error("é")).kind);
+        kinds.push(lex_failure(lex_error("a\u{200D}b")).kind);
 
         for (index, kind) in kinds.iter().enumerate() {
             assert!(
@@ -397,6 +400,8 @@ mod tests {
             "b'é'",
             "'r#self",
             "a'x'",
+            "m!(a\u{1F600});",
+            "let _ = \u{301};",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
@@ -407,12 +412,12 @@ mod tests {
     #[test]
     fn unsupported_input_is_unsupported_syntax_with_a_location() {
         for text in [
-            "fn main() { 1.5é }",
+            "fn main() { 1.5f\u{200D}32 }",
             "/// doc",
-            "fn café() {}",
-            "r#é",
-            "1e3é",
-            "'é",
+            "fn caf\u{200D}e() {}",
+            "r#a\u{200D}",
+            "1e3a\u{200C}",
+            "'a\u{200D}",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(
@@ -437,6 +442,9 @@ mod tests {
     fn lexing_to_end_of_file_succeeds() {
         let mut sources = SourceTable::default();
         let text = "#!/usr/bin/env run\nfn main( {}\n";
+        let id = sources.add_text("main.rs", text);
+        assert_eq!(lex(id, text, Edition::E2024), Ok(()));
+        let text = "fn café<'é>() { let 東京 = r#é + 1é; }";
         let id = sources.add_text("main.rs", text);
         assert_eq!(lex(id, text, Edition::E2024), Ok(()));
     }

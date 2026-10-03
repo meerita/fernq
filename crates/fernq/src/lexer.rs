@@ -4,11 +4,13 @@
 //! and returns one [`Token`] per call, until end of file or the first lexical
 //! error. It stores no tokens; retention belongs to the caller.
 //!
-//! The supported lexical surface is ASCII identifiers and raw identifiers,
-//! strict and reserved keywords, ASCII lifetimes and raw lifetimes, integer
-//! and float literals, character and byte literals, the six string literal
-//! classes that open with `"`, punctuation, and the three delimiter pairs.
-//! The lexer skips a byte order mark at offset 0, a shebang at the start of
+//! The supported lexical surface is identifiers and raw identifiers, strict
+//! and reserved keywords, lifetimes and raw lifetimes, integer and float
+//! literals, character and byte literals, the six string literal classes
+//! that open with `"`, punctuation, and the three delimiter pairs. An
+//! identifier, a lifetime or raw name, and a literal suffix start with
+//! `XID_Start` or `_` and continue with `XID_Continue`, in the Unicode version
+//! of module `unicode`; the lexer does not normalize them. The lexer skips a byte order mark at offset 0, a shebang at the start of
 //! the text, whitespace, and non-doc comments. Any other input ends lexing
 //! with a [`LexError`]: invalid when the text is not valid Rust, unsupported
 //! otherwise. The lexer does not pair delimiters. It checks the lexical form
@@ -20,6 +22,7 @@
 
 use crate::edition::Edition;
 use crate::source::{ByteOffset, SourceId, Span};
+use crate::unicode;
 
 /// The largest number of `#` that delimit a raw literal.
 const MAX_RAW_POUNDS: usize = 255;
@@ -508,8 +511,10 @@ pub(crate) enum InvalidEscape {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unsupported {
-    /// A character the lexer does not support, where it starts a token or
-    /// where it could extend the token before it. The span is the character.
+    /// ZWJ (U+200D) or ZWNJ (U+200C) after the first character of an
+    /// identifier, raw identifier, lifetime, raw lifetime, or suffix. The
+    /// Reference forbids them there and `rustc` accepts them, so Fernq does
+    /// not classify them. The span is the character.
     Character(char),
     /// A doc comment. The span is its opening `///`, `//!`, `/**`, or `/*!`.
     DocComment,
@@ -636,6 +641,7 @@ impl<'text> Lexer<'text> {
             '"' => self.string_literal(start, start, Content::Unicode)?,
             '\'' => self.quote(start)?,
             '0'..='9' => self.number_literal(start)?,
+            _ if !c.is_ascii() && unicode::is_xid_start(c) => self.identifier_or_literal(start)?,
             '#' => {
                 self.check_reserved_guard(start)?;
                 (TokenKind::Punctuation(Punctuation::Pound), start + 1)
@@ -652,12 +658,8 @@ impl<'text> Lexer<'text> {
     /// Returns the kind and end of the identifier, keyword, raw identifier,
     /// or prefixed literal at `start`.
     fn identifier_or_literal(&self, start: usize) -> Result<(TokenKind, usize), LexError> {
-        let identifier = self
-            .rest(start)
-            .split(|&byte| !is_identifier_continue(byte))
-            .next()
-            .unwrap_or_default();
-        let end = start + identifier.len();
+        let end = self.identifier_end(start)?;
+        let identifier = self.rest(start).get(..end - start).unwrap_or_default();
         let since_2021 = self.edition >= Edition::E2021;
         match self.rest(end).first() {
             Some(b'#') => match identifier {
@@ -690,7 +692,7 @@ impl<'text> Lexer<'text> {
                 }
                 _ => {}
             },
-            _ => self.check_extent_end(end)?,
+            _ => {}
         }
         let kind = Keyword::from_text(identifier, self.edition)
             .map_or(TokenKind::Identifier, TokenKind::Keyword);
@@ -717,13 +719,10 @@ impl<'text> Lexer<'text> {
         let may_be_identifier = content == Content::Unicode && pound_count == 1;
         match self.char_at(after) {
             Some('"') => self.raw_string(start, after, pound_count, content),
-            Some(c) if may_be_identifier && (c.is_ascii_alphabetic() || c == '_') => {
+            Some(c) if may_be_identifier && is_identifier_start(c) => {
                 self.raw_identifier(start, after)
             }
             next => {
-                if may_be_identifier {
-                    self.check_extent_end(after)?;
-                }
                 let kind = LexErrorKind::Invalid(Invalid::MalformedRawPrefix);
                 let hi = after + next.map_or(0, char::len_utf8);
                 Err(self.error(kind, start, hi))
@@ -734,44 +733,38 @@ impl<'text> Lexer<'text> {
     /// Returns the kind and end of the raw identifier at `start` whose name
     /// starts at `name`.
     fn raw_identifier(&self, start: usize, name: usize) -> Result<(TokenKind, usize), LexError> {
-        let len = self.count_while(name, is_identifier_continue);
-        self.check_extent_end(name + len)?;
-        if is_reserved_raw_name(self.rest(name).get(..len).unwrap_or_default()) {
+        let end = self.identifier_end(name)?;
+        if is_reserved_raw_name(self.rest(name).get(..end - name).unwrap_or_default()) {
             let kind = LexErrorKind::Invalid(Invalid::ReservedRawIdentifier);
-            return Err(self.error(kind, start, name + len));
+            return Err(self.error(kind, start, end));
         }
         // No reserved prefix rule applies after a raw identifier.
-        Ok((TokenKind::RawIdentifier, name + len))
+        Ok((TokenKind::RawIdentifier, end))
     }
 
     /// Returns the kind and end of the character literal, lifetime, or raw
     /// lifetime at `start`, a `'`.
     ///
     /// The text after the `'` decides the class: a character then `'` is a
-    /// character literal, and an identifier character not followed by `'` is
-    /// a lifetime.
+    /// character literal, and `XID_Start` or `_` not followed by `'` starts a
+    /// lifetime.
     fn quote(&self, start: usize) -> Result<(TokenKind, usize), LexError> {
         let first = start + 1;
         let Some(c) = self.char_at(first) else {
             return Err(self.unterminated_literal(start));
         };
         let closes = self.rest(first + c.len_utf8()).first() == Some(&b'\'');
-        if !closes && (c.is_ascii_alphabetic() || c == '_') {
+        if !closes && is_identifier_start(c) {
             return self.lifetime(start);
-        }
-        if !closes && !c.is_ascii() {
-            // A non-ASCII character could start a lifetime name.
-            self.check_extent_end(first)?;
         }
         self.char_literal(start, start, Content::Unicode)
     }
 
     /// Returns the kind and end of the lifetime at `start`, a `'` followed by
-    /// an ASCII letter or `_`, or of the raw lifetime that starts there.
+    /// `XID_Start` or `_`, or of the raw lifetime that starts there.
     fn lifetime(&self, start: usize) -> Result<(TokenKind, usize), LexError> {
         let name = start + 1;
-        let end = name + self.count_while(name, is_identifier_continue);
-        self.check_extent_end(end)?;
+        let end = self.identifier_end(name)?;
         let reason = match self.rest(end).first() {
             Some(b'\'') => Invalid::CharLiteralTooLong,
             Some(b'#') if self.edition >= Edition::E2021 => {
@@ -791,13 +784,11 @@ impl<'text> Lexer<'text> {
     /// No reserved prefix rule applies after a raw lifetime.
     fn raw_lifetime(&self, start: usize, name: usize) -> Result<(TokenKind, usize), LexError> {
         let next = self.char_at(name);
-        if !next.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
-            self.check_extent_end(name)?;
+        if !next.is_some_and(is_identifier_start) {
             let kind = LexErrorKind::Invalid(Invalid::MalformedRawPrefix);
             return Err(self.error(kind, start, name + next.map_or(0, char::len_utf8)));
         }
-        let end = name + self.count_while(name, is_identifier_continue);
-        self.check_extent_end(end)?;
+        let end = self.identifier_end(name)?;
         let (reason, hi) = if self.rest(end).first() == Some(&b'\'') {
             (Invalid::CharLiteralTooLong, end + 1)
         } else if is_reserved_raw_name(self.rest(name).get(..end - name).unwrap_or_default()) {
@@ -1080,9 +1071,9 @@ impl<'text> Lexer<'text> {
                 return Err(self.error(kind, start, end + 1));
             }
             (10, [b'e' | b'E', ..]) => return self.float_exponent(start, end),
-            (_, [b'.', after @ ..]) => match after.first() {
+            (_, [b'.', ..]) => match self.char_at(end + 1) {
                 // `..`, a field, or a method call: the literal ends before the `.`.
-                Some(&next) if next == b'.' || next == b'_' || next.is_ascii_alphabetic() => {
+                Some(next) if next == '.' || is_identifier_start(next) => {
                     return Ok((TokenKind::IntegerLiteral, end));
                 }
                 Some(next) if radix == 10 && next.is_ascii_digit() => {
@@ -1093,7 +1084,6 @@ impl<'text> Lexer<'text> {
                     };
                 }
                 _ => {
-                    self.check_extent_end(end + 1)?;
                     if radix != 10 {
                         let kind = LexErrorKind::Invalid(Invalid::RadixPeriod);
                         return Err(self.error(kind, start, end + 1));
@@ -1133,27 +1123,19 @@ impl<'text> Lexer<'text> {
     /// Returns `kind` and the end of the literal whose body ends at `end`,
     /// after its suffix if any.
     ///
-    /// A suffix is an ASCII letter, or `_` and an identifier character, then
-    /// identifier characters. A `_` alone is a hard cut of the Reference
+    /// A suffix is `XID_Start`, or `_` and an `XID_Continue` character, then
+    /// `XID_Continue` characters. A `_` alone is a hard cut of the Reference
     /// suffix grammar and is invalid. A caller whose suffix cannot start with
     /// `e` or `E` handles that letter before the call.
     fn suffixed(&self, kind: TokenKind, end: usize) -> Result<(TokenKind, usize), LexError> {
-        let suffix_len = match self.rest(end) {
-            [byte, ..] if byte.is_ascii_alphabetic() => {
-                self.count_while(end, is_identifier_continue)
-            }
-            [b'_', next, ..] if is_identifier_continue(*next) => {
-                self.count_while(end, is_identifier_continue)
-            }
-            [b'_', ..] => {
-                self.check_extent_end(end + 1)?;
+        match self.char_at(end) {
+            Some('_') if !self.char_at(end + 1).is_some_and(unicode::is_xid_continue) => {
                 let kind = LexErrorKind::Invalid(Invalid::UnderscoreSuffix);
-                return Err(self.error(kind, end, end + 1));
+                Err(self.error(kind, end, end + 1))
             }
-            _ => 0,
-        };
-        self.check_extent_end(end + suffix_len)?;
-        Ok((kind, end + suffix_len))
+            Some(c) if is_identifier_start(c) => Ok((kind, self.identifier_end(end)?)),
+            _ => Ok((kind, end)),
+        }
     }
 
     /// From edition 2024, rejects the run of `#` at `start` when it is longer
@@ -1173,30 +1155,28 @@ impl<'text> Lexer<'text> {
         Err(self.error(LexErrorKind::Invalid(reason), start, end))
     }
 
-    /// Rejects a non-ASCII character other than whitespace at `pos`, directly
-    /// after a token that an identifier character could extend.
+    /// Returns the offset after the `XID_Continue` characters at `pos`.
     ///
-    /// Fernq does not classify non-ASCII identifier characters, so such a
-    /// token is not returned.
-    fn check_extent_end(&self, pos: usize) -> Result<(), LexError> {
-        match self.char_at(pos) {
-            Some(c) if !c.is_ascii() && !is_whitespace(c) => {
-                let kind = LexErrorKind::Unsupported(Unsupported::Character(c));
-                Err(self.error(kind, pos, pos + c.len_utf8()))
+    /// ZWJ (U+200D) and ZWNJ (U+200C) are `XID_Continue`, and `rustc` accepts
+    /// them inside an identifier, but `[ident.zero-width-chars]` forbids them:
+    /// either one ends lexing as unsupported, and no token is returned.
+    fn identifier_end(&self, mut pos: usize) -> Result<usize, LexError> {
+        loop {
+            pos += self.count_while(pos, is_identifier_continue);
+            match self.char_at(pos) {
+                Some(c @ ('\u{200C}' | '\u{200D}')) => {
+                    let kind = LexErrorKind::Unsupported(Unsupported::Character(c));
+                    return Err(self.error(kind, pos, pos + c.len_utf8()));
+                }
+                Some(c) if !c.is_ascii() && unicode::is_xid_continue(c) => pos += c.len_utf8(),
+                _ => return Ok(pos),
             }
-            _ => Ok(()),
         }
     }
 
-    /// Returns the error for `c` at `pos`, a character that starts no
-    /// supported token.
+    /// Returns the error for `c` at `pos`, a character that starts no token.
     fn character_error(&self, c: char, pos: usize) -> LexError {
-        let kind = match c {
-            '`' | '\\' | '\u{0}'..='\u{8}' | '\u{E}'..='\u{1F}' | '\u{7F}' => {
-                LexErrorKind::Invalid(Invalid::Character(c))
-            }
-            _ => LexErrorKind::Unsupported(Unsupported::Character(c)),
-        };
+        let kind = LexErrorKind::Invalid(Invalid::Character(c));
         self.error(kind, pos, pos + c.len_utf8())
     }
 
@@ -1329,6 +1309,13 @@ fn is_reserved_raw_name(name: &[u8]) -> bool {
     matches!(name, b"_" | b"crate" | b"self" | b"Self" | b"super")
 }
 
+/// Whether `c` starts an identifier, a lifetime or raw name, or a suffix:
+/// `XID_Start` or `_`.
+fn is_identifier_start(c: char) -> bool {
+    c == '_' || unicode::is_xid_start(c)
+}
+
+/// Whether `byte` is an ASCII `XID_Continue` character.
 fn is_identifier_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
@@ -1495,6 +1482,11 @@ mod tests {
     fn lex_in(text: &str, edition: Edition) -> Vec<Result<Token, LexError>> {
         let mut sources = SourceTable::default();
         let id = sources.add_text("main.rs", text);
+        lex_source(id, text, edition)
+    }
+
+    /// Lexes `text`, the text of `id`, like [`lex_in`].
+    fn lex_source(id: SourceId, text: &str, edition: Edition) -> Vec<Result<Token, LexError>> {
         let mut lexer = Lexer::new(id, text, edition);
         let mut results = Vec::new();
         loop {
@@ -2231,29 +2223,130 @@ mod tests {
     }
 
     #[test]
-    fn every_other_start_is_unsupported() {
+    fn a_non_ascii_start_is_an_identifier_only_when_it_is_xid_start() {
+        for c in ['é', '中', '\u{0C5C}', '\u{212A}'] {
+            let text = format!("fn {c} x");
+            let hi = 3 + c.len_utf8();
+            assert_eq!(
+                lex(&text),
+                vec![
+                    keyword(Keyword::Fn, 0, 2),
+                    ident(3, hi),
+                    ident(hi + 1, hi + 2),
+                    end(hi + 2)
+                ],
+                "{c:?}"
+            );
+        }
         for c in [
             '\u{A0}',
-            'é',
             '€',
-            '中',
             '😀',
             '\u{FEFF}',
             '\u{200B}',
+            '\u{200C}',
             '\u{200D}',
             '\u{202E}',
             '\u{3000}',
             '\u{80}',
             '\u{FFFD}',
             '\u{10FFFF}',
+            '\u{0301}',
+            '\u{037A}',
+            '\u{0558}',
+            '\u{2E2F}',
         ] {
             let text = format!("fn {c} x");
             assert_eq!(
                 lex(&text),
-                vec![keyword(Keyword::Fn, 0, 2), unsupported(c, 3)],
+                vec![keyword(Keyword::Fn, 0, 2), invalid(c, 3)],
                 "{c:?}"
             );
         }
+    }
+
+    /// For every non-ASCII character `c` other than whitespace: `c` at a token
+    /// start is an identifier when it is `XID_Start` and invalid otherwise.
+    /// After the identifier `a`, the lifetime `'a`, and the suffix `u` of
+    /// `1u`, ZWJ and ZWNJ are unsupported, any other `XID_Continue` character
+    /// extends the token, and any other character ends it and starts no token.
+    #[test]
+    fn every_non_ascii_character_is_classified_by_the_identifier_tables() {
+        let mut sources = SourceTable::default();
+        let id = sources.add_text("main.rs", "");
+        let mut text = String::new();
+        let mut count = 0;
+        for c in ('\u{80}'..=char::MAX).filter(|&c| !is_whitespace(c)) {
+            let len = c.len_utf8();
+            // The space keeps U+FEFF from being a byte order mark.
+            text.clear();
+            text.push(' ');
+            text.push(c);
+            let alone = if unicode::is_xid_start(c) {
+                vec![ident(1, 1 + len), end(1 + len)]
+            } else {
+                vec![invalid(c, 1)]
+            };
+            assert_eq!(lex_source(id, &text, Edition::E2024), alone, "{c:?}");
+
+            for (prefix, kind) in [
+                ("a", TokenKind::Identifier),
+                ("'a", TokenKind::Lifetime),
+                ("1u", TokenKind::IntegerLiteral),
+            ] {
+                text.clear();
+                text.push_str(prefix);
+                text.push(c);
+                let at = prefix.len();
+                let expected = if matches!(c, '\u{200C}' | '\u{200D}') {
+                    vec![unsupported(c, at)]
+                } else if unicode::is_xid_continue(c) {
+                    vec![token(kind, 0, at + len), end(at + len)]
+                } else {
+                    vec![token(kind, 0, at), invalid(c, at)]
+                };
+                assert_eq!(
+                    lex_source(id, &text, Edition::E2024),
+                    expected,
+                    "{prefix}{c:?}"
+                );
+            }
+            count += 1;
+        }
+        // The scalar values, less the surrogates, ASCII, and five whitespace characters.
+        assert_eq!(count, 0x11_0000 - 0x800 - 0x80 - 5);
+    }
+
+    #[test]
+    fn a_character_that_no_identifier_can_contain_ends_the_token_before_it() {
+        let emoji = '\u{1F600}';
+        let acute = '\u{0301}';
+        assert_eq!(lex("a\u{1F600}"), vec![ident(0, 1), invalid(emoji, 1)]);
+        assert_eq!(lex("'a\u{1F600}"), vec![lifetime(0, 2), invalid(emoji, 2)]);
+        assert_eq!(lex("1\u{301}"), vec![int(0, 1), invalid(acute, 1)]);
+        assert_eq!(lex("\"a\"\u{301}"), vec![string(0, 3), invalid(acute, 3)]);
+        assert_eq!(lex("1.\u{301}"), vec![float(0, 2), invalid(acute, 2)]);
+        assert_eq!(lex("\u{200D}a"), vec![invalid('\u{200D}', 0)]);
+    }
+
+    #[test]
+    fn a_raw_prefix_or_quote_before_a_character_that_starts_no_name_is_invalid() {
+        assert_eq!(
+            lex("r#\u{301}"),
+            vec![invalid_at(Invalid::MalformedRawPrefix, 0, 4)]
+        );
+        assert_eq!(
+            lex("'r#\u{301}"),
+            vec![invalid_at(Invalid::MalformedRawPrefix, 0, 5)]
+        );
+        assert_eq!(
+            lex("'+x"),
+            vec![invalid_at(Invalid::UnclosedCharLiteral, 0, 3)]
+        );
+        assert_eq!(
+            lex("'\u{301}x"),
+            vec![invalid_at(Invalid::UnclosedCharLiteral, 0, 4)]
+        );
     }
 
     #[test]
@@ -3275,54 +3368,296 @@ mod tests {
     }
 
     #[test]
-    fn no_token_is_returned_before_a_character_that_could_extend_it() {
-        for (text, c, lo) in [
-            ("café", 'é', 3),
-            ("_é", 'é', 1),
-            ("fn中", '中', 2),
-            ("1é", 'é', 1),
-            ("1_é", 'é', 2),
-            ("1ué", 'é', 2),
-            ("1.é", 'é', 2),
-            ("1.0é", 'é', 3),
-            ("1.0_é", 'é', 4),
-            ("1e3é", 'é', 3),
-            ("1.0f32é", 'é', 6),
-            ("1e3f32é", 'é', 6),
-            ("0x1.é", 'é', 4),
-            ("0b1é", 'é', 3),
-            ("'é", 'é', 1),
-            ("'é中'", 'é', 1),
-            ("'aé", 'é', 2),
-            ("'_é", 'é', 2),
-            ("'a'é", 'é', 3),
-            ("'a'xé", 'é', 4),
-            ("b'a'é", 'é', 4),
-            ("'r#é", 'é', 3),
-            ("'r#aé", 'é', 4),
-            ("r#é", 'é', 2),
-            ("r#aé", 'é', 3),
-            ("\"a\"é", 'é', 3),
-            ("\"a\"xé", 'é', 4),
-            ("\"a\"_é", 'é', 4),
-            ("r\"a\"é", 'é', 4),
-            ("r#\"a\"#é", 'é', 6),
-            ("b\"a\"é", 'é', 4),
-            ("c\"a\"é", 'é', 4),
+    fn no_token_is_returned_before_a_zero_width_joiner_that_could_extend_it() {
+        for (text, lo) in [
+            ("caf\u{e9}\u{200D}", 5),
+            ("_\u{200D}", 1),
+            ("fn\u{200D}", 2),
+            ("1u\u{200D}", 2),
+            ("1_u\u{200D}", 3),
+            ("1.0f32\u{200D}", 6),
+            ("1e3f32\u{200D}", 6),
+            ("0b1u\u{200D}", 4),
+            ("'a\u{200D}", 2),
+            ("'_\u{200D}", 2),
+            ("'a'x\u{200D}", 4),
+            ("b'a'x\u{200D}", 5),
+            ("'r#a\u{200D}", 4),
+            ("r#a\u{200D}", 3),
+            ("\"a\"x\u{200D}", 4),
+            ("\"a\"_\u{200D}", 4),
+            ("r\"a\"x\u{200D}", 5),
+            ("r#\"a\"#x\u{200D}", 7),
+            ("b\"a\"x\u{200D}", 5),
+            ("c\"a\"x\u{200D}", 5),
         ] {
-            assert_eq!(lex(text), vec![unsupported(c, lo)], "{text:?}");
+            assert_eq!(lex(text), vec![unsupported('\u{200D}', lo)], "{text:?}");
         }
+    }
+
+    #[test]
+    fn non_ascii_characters_continue_every_identifier_class() {
+        let kind_of = |text: &str| -> Vec<Result<Token, LexError>> {
+            let mut results = lex(text);
+            results.pop();
+            results
+        };
+        for (text, kind) in [
+            ("café", TokenKind::Identifier),
+            ("_é", TokenKind::Identifier),
+            ("fn中", TokenKind::Identifier),
+            ("1é", TokenKind::IntegerLiteral),
+            ("1_é", TokenKind::IntegerLiteral),
+            ("1ué", TokenKind::IntegerLiteral),
+            ("1.0é", TokenKind::FloatLiteral),
+            ("1.0_é", TokenKind::FloatLiteral),
+            ("1e3é", TokenKind::FloatLiteral),
+            ("1.0f32é", TokenKind::FloatLiteral),
+            ("1e3f32é", TokenKind::FloatLiteral),
+            ("0b1é", TokenKind::IntegerLiteral),
+            ("'é", TokenKind::Lifetime),
+            ("'aé", TokenKind::Lifetime),
+            ("'_é", TokenKind::Lifetime),
+            ("'a'é", TokenKind::CharLiteral),
+            ("'a'xé", TokenKind::CharLiteral),
+            ("b'a'é", TokenKind::ByteLiteral),
+            ("'r#é", TokenKind::RawLifetime),
+            ("'r#aé", TokenKind::RawLifetime),
+            ("r#é", TokenKind::RawIdentifier),
+            ("r#aé", TokenKind::RawIdentifier),
+            ("\"a\"é", TokenKind::StringLiteral),
+            ("\"a\"xé", TokenKind::StringLiteral),
+            ("\"a\"_é", TokenKind::StringLiteral),
+            ("r\"a\"é", TokenKind::RawStringLiteral),
+            ("r#\"a\"#é", TokenKind::RawStringLiteral),
+            ("b\"a\"é", TokenKind::ByteStringLiteral),
+            ("c\"a\"é", TokenKind::CStringLiteral),
+        ] {
+            assert_eq!(kind_of(text), vec![token(kind, 0, text.len())], "{text:?}");
+        }
+        assert_eq!(
+            lex("1.é"),
+            vec![
+                int(0, 1),
+                punct(Punctuation::Dot, 1, 2),
+                ident(2, 4),
+                end(4)
+            ]
+        );
+        assert_eq!(
+            lex("0x1.é"),
+            vec![
+                int(0, 3),
+                punct(Punctuation::Dot, 3, 4),
+                ident(4, 6),
+                end(6)
+            ]
+        );
+        assert_eq!(
+            lex("'é中'"),
+            vec![invalid_at(Invalid::CharLiteralTooLong, 0, 7)]
+        );
+    }
+
+    /// The probe tokens of the Unicode identifier compatibility run, in the
+    /// edition of each probe.
+    #[test]
+    fn lexes_the_unicode_identifier_probe_tokens() {
+        let single = |text: &str, kind: TokenKind, edition: Edition| {
+            assert_eq!(
+                lex_in(text, edition),
+                vec![token(kind, 0, text.len()), end(text.len())],
+                "{text:?} in {edition:?}"
+            );
+        };
+        // u01, u02, u03, u05, u10, and U+212A.
+        for edition in [Edition::E2015, Edition::E2024] {
+            for text in ["café", "Москва", "東京", "_é"] {
+                single(text, TokenKind::Identifier, edition);
+            }
+        }
+        assert_eq!("cafe\u{301}".len(), 6);
+        for text in [
+            "cafe\u{301}",
+            "\u{C5C}",
+            "a\u{C5C}",
+            "a\u{30FB}b",
+            "\u{212A}",
+        ] {
+            single(text, TokenKind::Identifier, Edition::E2024);
+        }
+        // u04, u06 to u09, u11, u12, z03.
+        for (text, c, lo) in [
+            ("\u{301}", '\u{301}', 0),
+            ("\u{558}", '\u{558}', 0),
+            ("a\u{558}", '\u{558}', 1),
+            ("\u{37A}", '\u{37A}', 0),
+            ("a\u{2E2F}", '\u{2E2F}', 1),
+            ("\u{1F600}", '\u{1F600}', 0),
+            ("a\u{1F600}", '\u{1F600}', 1),
+            ("\u{200D}a", '\u{200D}', 0),
+        ] {
+            let mut expected = if lo == 0 { vec![] } else { vec![ident(0, lo)] };
+            expected.push(invalid(c, lo));
+            assert_eq!(lex(text), expected, "{text:?}");
+        }
+        // z01, z02, and the identifiers of z04 to z07.
+        for c in ['\u{200D}', '\u{200C}'] {
+            assert_eq!(lex(&format!("a{c}b")), vec![unsupported(c, 1)], "{c:?}");
+            for edition in [Edition::E2015, Edition::E2024] {
+                assert_eq!(
+                    lex_in(
+                        &format!("fn main() {{ let a{c}b = 1; let _ = a{c}b; }}"),
+                        edition
+                    ),
+                    vec![
+                        keyword(Keyword::Fn, 0, 2),
+                        ident(3, 7),
+                        open(Delimiter::Parenthesis, 7),
+                        close(Delimiter::Parenthesis, 8),
+                        open(Delimiter::Brace, 10),
+                        keyword(Keyword::Let, 12, 15),
+                        unsupported(c, 17),
+                    ],
+                    "{c:?} in {edition:?}"
+                );
+            }
+        }
+        // r01 to r06.
+        for text in ["r#café", "r#é"] {
+            single(text, TokenKind::RawIdentifier, Edition::E2024);
+        }
+        for text in ["'é", "'café"] {
+            single(text, TokenKind::Lifetime, Edition::E2024);
+        }
+        single("'r#é", TokenKind::RawLifetime, Edition::E2021);
+        single("1é", TokenKind::IntegerLiteral, Edition::E2024);
+        single("1.0é", TokenKind::FloatLiteral, Edition::E2024);
+        single("\"a\"é", TokenKind::StringLiteral, Edition::E2024);
+        single("'a'é", TokenKind::CharLiteral, Edition::E2024);
+        single("'é'", TokenKind::CharLiteral, Edition::E2024);
+        assert_eq!(
+            lex("1.é"),
+            vec![
+                int(0, 1),
+                punct(Punctuation::Dot, 1, 2),
+                ident(2, 4),
+                end(4)
+            ]
+        );
+    }
+
+    /// ZWJ and ZWNJ are `XID_Continue`, which `rustc 1.99.0` accepts inside
+    /// identifiers, but `[ident.zero-width-chars]` forbids them there. Until
+    /// the Reference and `rustc` agree, they are unsupported after the first
+    /// character of an identifier, raw identifier, lifetime, raw lifetime, or
+    /// suffix. This classification is provisional. Where no identifier has
+    /// started, they start no token and are invalid.
+    #[test]
+    fn zero_width_joiners_are_provisionally_unsupported_inside_identifiers() {
+        for c in ['\u{200D}', '\u{200C}'] {
+            let len = c.len_utf8();
+            for (text, lo) in [
+                (format!("a{c}"), 1),
+                (format!("_{c}"), 1),
+                (format!("a{c}b"), 1),
+                (format!("r#a{c}"), 3),
+                (format!("'a{c}"), 2),
+                (format!("'r#a{c}"), 4),
+                (format!("\"x\"a{c}"), 4),
+                (format!("\"x\"_{c}"), 4),
+                (format!("1a{c}"), 2),
+            ] {
+                assert_eq!(lex(&text), vec![unsupported(c, lo)], "{text:?}");
+            }
+            for (text, expected) in [
+                (format!("{c}a"), vec![invalid(c, 0)]),
+                (
+                    format!("r#{c}"),
+                    vec![invalid_at(Invalid::MalformedRawPrefix, 0, 2 + len)],
+                ),
+                (
+                    format!("'r#{c}"),
+                    vec![invalid_at(Invalid::MalformedRawPrefix, 0, 3 + len)],
+                ),
+                (format!("\"x\"{c}"), vec![string(0, 3), invalid(c, 3)]),
+                (format!("1{c}"), vec![int(0, 1), invalid(c, 1)]),
+                (format!("1.{c}"), vec![float(0, 2), invalid(c, 2)]),
+                (
+                    format!("'{c}x"),
+                    vec![invalid_at(Invalid::UnclosedCharLiteral, 0, 2 + len)],
+                ),
+            ] {
+                assert_eq!(lex(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    /// The reserved prefix tokens of the Reference cover every identifier, so
+    /// a non-ASCII identifier follows the edition rules of an ASCII one.
+    #[test]
+    fn non_ascii_identifiers_follow_the_reserved_prefix_rules() {
+        for edition in [Edition::E2015, Edition::E2018] {
+            assert_eq!(
+                lex_in("é#a", edition),
+                vec![
+                    ident(0, 2),
+                    punct(Punctuation::Pound, 2, 3),
+                    ident(3, 4),
+                    end(4)
+                ]
+            );
+            assert_eq!(
+                lex_in("é\"x\"", edition),
+                vec![ident(0, 2), string(2, 5), end(5)]
+            );
+            assert_eq!(
+                lex_in("é'x'", edition),
+                vec![ident(0, 2), character(2, 5), end(5)]
+            );
+            assert_eq!(
+                lex_in("'é#a", edition),
+                vec![
+                    lifetime(0, 3),
+                    punct(Punctuation::Pound, 3, 4),
+                    ident(4, 5),
+                    end(5)
+                ]
+            );
+        }
+        for edition in [Edition::E2021, Edition::E2024] {
+            for (text, hi) in [("é#a", 3), ("é\"x\"", 3), ("é'x'", 3), ("'é#a", 4)] {
+                assert_eq!(
+                    lex_in(text, edition),
+                    vec![invalid_at(Invalid::ReservedPrefix, 0, hi)],
+                    "{text:?} in {edition:?}"
+                );
+            }
+        }
+        assert_eq!(
+            lex("r#é#a"),
+            vec![
+                raw_ident(0, 4),
+                punct(Punctuation::Pound, 4, 5),
+                ident(5, 6),
+                end(6)
+            ]
+        );
     }
 
     #[test]
     fn punctuation_and_delimiters_are_returned_before_an_unsupported_character() {
         assert_eq!(
-            lex("+é"),
-            vec![punct(Punctuation::Plus, 0, 1), unsupported('é', 1)]
+            lex("+a\u{200D}"),
+            vec![punct(Punctuation::Plus, 0, 1), unsupported('\u{200D}', 2)]
         );
         assert_eq!(
-            lex("(é"),
-            vec![open(Delimiter::Parenthesis, 0), unsupported('é', 1)]
+            lex("(a\u{200C}"),
+            vec![open(Delimiter::Parenthesis, 0), unsupported('\u{200C}', 2)]
+        );
+        assert_eq!(
+            lex("+é"),
+            vec![punct(Punctuation::Plus, 0, 1), ident(1, 3), end(3)]
         );
         assert_eq!(lex("1\"x\""), vec![int(0, 1), string(1, 4), end(4)]);
     }
@@ -3381,7 +3716,7 @@ mod tests {
     fn an_error_repeats() {
         for (text, expected) in [
             ("fn `", invalid('`', 3)),
-            ("x é", unsupported('é', 2)),
+            ("x a\u{200D}", unsupported('\u{200D}', 3)),
             ("/// d", doc_comment(0)),
             ("/*", unterminated(0, 2)),
         ] {
@@ -3410,15 +3745,16 @@ mod tests {
 
     /// Lexes every text from an alphabet of comment, shebang, delimiter,
     /// identifier, literal prefix, digit, exponent sign, punctuation, quote,
-    /// escape, whitespace, CR, invalid, and multibyte characters: up to five
-    /// characters in edition 2024, up to four in the earlier editions. Checks that each result lies in the text
+    /// escape, whitespace, CR, invalid, and multibyte characters, the last
+    /// including a combining mark and ZWJ: up to five characters in edition
+    /// 2024, up to four in the earlier editions. Checks that each result lies in the text
     /// after the previous one and that each token other than the end of file
     /// is not empty.
     #[test]
     fn every_short_text_lexes_to_spans_inside_the_text() {
-        const ALPHABET: [char; 28] = [
+        const ALPHABET: [char; 30] = [
             '/', '*', '!', '#', '[', '\n', 'a', ' ', 'é', '\u{FEFF}', '`', '0', '1', '.', 'e', 'x',
-            '_', '<', '-', '=', '"', '+', '\\', 'r', 'b', 'c', '\r', '\'',
+            '_', '<', '-', '=', '"', '+', '\\', 'r', 'b', 'c', '\r', '\'', '\u{301}', '\u{200D}',
         ];
         let mut sources = SourceTable::default();
         let id = sources.add_text("main.rs", "");
@@ -3443,7 +3779,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(count, 3 * 637_421 + 17_847_789);
+        assert_eq!(count, 3 * 837_931 + 25_137_931);
     }
 
     /// Runs `lexer` over `text` to its end and checks every span.
