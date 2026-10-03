@@ -20,11 +20,17 @@ UNICODE_TABLES := crates/fernq/src/unicode/tables.rs
 TOOLS_DIR      := target/tools
 TOOL_CLIPPY    := clippy-driver --edition 2024 -D warnings
 
+# One fuzz session of the lexer. Every session lasts at most 120 seconds.
+FUZZ_SECONDS     ?= 120
+FUZZ_MAX_SECONDS := 120
+FUZZ_CORPUS      := fuzz/corpus/lex
+FUZZ_SEEDS       := fuzz/seeds/lex crates/fernq/tests/fixtures/compile-fail
+
 DOCKER_RUN := docker run --rm --platform $(PLATFORM) -v "$(CURDIR):/src:ro"
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test fmt clippy bench fuzzing tools check unicode-tables up linux shell check-all scan down
+.PHONY: help build test fmt clippy bench fuzzing tools check fuzz unicode-tables up linux shell check-all scan down
 
 help:
 	@echo "Host checks:"
@@ -36,6 +42,8 @@ help:
 	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
 	@echo "  fuzzing    clippy and fuzz entry tests with the fuzzing feature"
 	@echo "  check      fmt, clippy, build, test, fuzzing, tools"
+	@echo "Fuzzing (needs cargo-fuzz and a C++ compiler; not part of check):"
+	@echo "  fuzz       one lexer fuzz session of FUZZ_SECONDS (1 to $(FUZZ_MAX_SECONDS), default 120)"
 	@echo "Generated source:"
 	@echo "  unicode-tables UCD=<path>  regenerate $(UNICODE_TABLES) from DerivedCoreProperties.txt"
 	@echo "Linux container ($(PLATFORM)):"
@@ -80,6 +88,15 @@ check:
 	$(CARGO_TEST)
 	$(MAKE) fuzzing
 	$(MAKE) tools
+
+fuzz:
+	@# Match the accepted values as text: 1 to 120, no sign or leading zero.
+	@case "$(FUZZ_SECONDS)" in \
+		[1-9]|[1-9][0-9]|1[01][0-9]|120) ;; \
+		*) echo "FUZZ_SECONDS must be a whole number of seconds from 1 to $(FUZZ_MAX_SECONDS), not '$(FUZZ_SECONDS)'" >&2; exit 2 ;; \
+	esac
+	mkdir -p $(FUZZ_CORPUS)
+	cargo fuzz run -s none lex $(FUZZ_CORPUS) $(FUZZ_SEEDS) -- -max_total_time=$(FUZZ_SECONDS)
 
 unicode-tables:
 	@test -n "$(UCD)" || { echo "usage: make unicode-tables UCD=<path of DerivedCoreProperties.txt>" >&2; exit 2; }
