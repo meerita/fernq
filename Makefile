@@ -30,9 +30,9 @@ help:
 	@echo "  test       cargo test"
 	@echo "  fmt        cargo fmt check"
 	@echo "  clippy     cargo clippy with -D warnings"
-	@echo "  bench      cargo bench"
+	@echo "  bench      cargo bench; not part of check"
 	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
-	@echo "  check      fmt, clippy, build, test, bench, tools"
+	@echo "  check      fmt, clippy, build, test, tools"
 	@echo "Generated source:"
 	@echo "  unicode-tables UCD=<path>  regenerate $(UNICODE_TABLES) from DerivedCoreProperties.txt"
 	@echo "Linux container ($(PLATFORM)):"
@@ -71,7 +71,6 @@ check:
 	$(CARGO_CLIPPY)
 	$(CARGO_BUILD)
 	$(CARGO_TEST)
-	$(CARGO_BENCH)
 	$(MAKE) tools
 
 unicode-tables:
