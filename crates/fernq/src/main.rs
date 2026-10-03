@@ -5,7 +5,8 @@
 //! a requested mode, and writing rendered output to process streams.
 //!
 //! The driver does not own Rust semantics, the source model contract, the
-//! diagnostic structure, or the semantics of any compiler stage.
+//! diagnostic structure, or the semantics of any compiler stage. Module
+//! `source` owns the source model.
 //!
 //! No workspace crate depends on the driver.
 //!
@@ -13,19 +14,24 @@
 //! accepts `fernq <INPUT> -o <OUTPUT>` and `fernq -h` or `fernq --help`:
 //!
 //! - Help prints usage on stdout and exits with status 0.
-//! - A valid invocation reports on stderr that compilation is not
-//!   implemented and exits with status 1. The driver opens no file and writes
-//!   no output.
+//! - A valid invocation loads the input into the source model. An input that
+//!   cannot be opened or read, is a directory, is longer than `u32::MAX`
+//!   bytes, or is not UTF-8 is reported on stderr with status 1. A loaded
+//!   input is reported on stderr as not compiled, because compilation is not
+//!   implemented, with status 1. The driver writes no output.
 //! - Any other command line is invalid. The driver reports it on stderr and
 //!   exits with status 2.
 
 mod cli;
+mod source;
 
 use std::env;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use cli::{Command, Invocation, USAGE, UsageError};
+use source::{LoadError, SourceFile, SourceTable};
 
 const HELP: &str = "\
 Compile a Rust source file. Compilation is not implemented.
@@ -47,7 +53,7 @@ The command line is experimental and may change without notice.";
 fn main() -> ExitCode {
     match cli::parse(env::args_os().skip(1).collect()) {
         Ok(Command::Help) => help(),
-        Ok(Command::Compile(invocation)) => unsupported(&invocation),
+        Ok(Command::Compile(invocation)) => compile(&invocation),
         Err(error) => usage_error(&error),
     }
 }
@@ -62,13 +68,32 @@ fn help() -> ExitCode {
     }
 }
 
-fn unsupported(invocation: &Invocation) -> ExitCode {
+fn compile(invocation: &Invocation) -> ExitCode {
+    let mut sources = SourceTable::default();
+    match sources.load(invocation.input()) {
+        Ok(id) => unsupported(sources.get(id), invocation.output()),
+        Err(error) => load_failure(invocation.input(), &error),
+    }
+}
+
+fn load_failure(input: &Path, error: &LoadError) -> ExitCode {
     // The exit status reports the failure even when stderr is unwritable.
     let _ = writeln!(
         io::stderr(),
-        "fernq: compilation is not implemented; {} was not compiled and {} was not written",
-        invocation.input().display(),
-        invocation.output().display(),
+        "fernq: cannot load {}: {error}",
+        input.display()
+    );
+    ExitCode::FAILURE
+}
+
+fn unsupported(input: &SourceFile, output: &Path) -> ExitCode {
+    // The exit status reports the failure even when stderr is unwritable.
+    let _ = writeln!(
+        io::stderr(),
+        "fernq: compilation is not implemented; {} ({} bytes) was not compiled and {} was not written",
+        input.path().display(),
+        input.len(),
+        output.display(),
     );
     ExitCode::FAILURE
 }

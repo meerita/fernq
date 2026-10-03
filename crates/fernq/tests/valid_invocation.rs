@@ -1,5 +1,5 @@
-//! A valid invocation reports that compilation is not implemented, exits with
-//! status 1, and writes no output file.
+//! A valid invocation exits with status 1 and writes no output file, whether
+//! its input loads or not, because compilation is not implemented.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -12,13 +12,13 @@ fn existing_input_is_not_compiled() {
     let dir = clear_test_dir("existing_input_is_not_compiled");
     let input = dir.join("main.rs");
     fs::write(&input, "fn main() {}\n").expect("the input file is written");
-    assert_unsupported(input.as_os_str(), &dir.join("main"));
+    assert_not_compiled(input.as_os_str(), &dir.join("main"));
 }
 
 #[test]
 fn missing_input_is_not_compiled() {
     let dir = clear_test_dir("missing_input_is_not_compiled");
-    assert_unsupported(dir.join("missing.rs").as_os_str(), &dir.join("main"));
+    assert_not_compiled(dir.join("missing.rs").as_os_str(), &dir.join("main"));
 }
 
 #[cfg(unix)]
@@ -28,12 +28,12 @@ fn non_utf8_input_path_is_not_compiled() {
 
     let dir = clear_test_dir("non_utf8_input_path_is_not_compiled");
     let input = dir.join(OsStr::from_bytes(b"in\xffput.rs"));
-    assert_unsupported(input.as_os_str(), &dir.join("main"));
+    assert_not_compiled(input.as_os_str(), &dir.join("main"));
 }
 
-/// Runs `fernq <input> -o <output>` and asserts the `unsupported` outcome:
-/// status 1, empty stdout, non-empty stderr, and no file at `output`.
-fn assert_unsupported(input: &OsStr, output_path: &Path) {
+/// Runs `fernq <input> -o <output>` and asserts status 1, empty stdout,
+/// non-empty stderr, and no file at `output`.
+fn assert_not_compiled(input: &OsStr, output_path: &Path) {
     let output = Command::new(env!("CARGO_BIN_EXE_fernq"))
         .arg(input)
         .arg("-o")
