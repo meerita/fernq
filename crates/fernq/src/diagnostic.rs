@@ -3,19 +3,22 @@
 //! A [`Diagnostic`] has a kind, a severity, a message, and an optional
 //! primary [`Location`]. The [`DiagnosticKind`] is the identity of a
 //! diagnostic inside Fernq; the message is human-readable text and carries no
-//! identity. Producers map their own errors to diagnostics; this module knows
-//! no other Fernq module.
+//! identity. Producers map their own errors to diagnostics. The only other
+//! Fernq module this module uses is `source`, whose table resolves a location
+//! in a loaded source to its path and text.
 //!
 //! [`render`] produces the human-readable text: a header line
 //! `<severity>[<kind>]: <message>`, then ` --> <path>:<line>:<column>` when a
 //! location exists. The format is experimental and is not a machine contract.
-//! Lines and columns count from 1. A line ends only at LF. A column counts the
-//! Unicode scalar values before the position on its line, excluding a byte
-//! order mark at the start of line 1.
+//! The position of a span is its start. Lines and columns count from 1. A line
+//! ends only at LF. A column counts the Unicode scalar values before the
+//! position on its line, excluding a byte order mark at the start of line 1.
 //!
 //! The module performs no I/O.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::source::{SourceId, SourceTable, Span};
 
 /// The identity of a diagnostic, rendered as a lowercase hyphenated name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +31,10 @@ pub(crate) enum DiagnosticKind {
     InputTooLarge,
     InputNotUtf8,
     TooManySourceFiles,
+    /// The source is not valid Rust: no token can start at the location.
+    LexicalError,
+    /// The source has syntax that Fernq does not support at the location.
+    UnsupportedSyntax,
     CompilationNotImplemented,
     InvalidCommandLine,
     /// An uncaught panic: Fernq violated one of its own invariants.
@@ -44,6 +51,8 @@ impl DiagnosticKind {
             Self::InputTooLarge => "input-too-large",
             Self::InputNotUtf8 => "input-not-utf8",
             Self::TooManySourceFiles => "too-many-source-files",
+            Self::LexicalError => "lexical-error",
+            Self::UnsupportedSyntax => "unsupported-syntax",
             Self::CompilationNotImplemented => "compilation-not-implemented",
             Self::InvalidCommandLine => "invalid-command-line",
             Self::InternalCompilerError => "internal-compiler-error",
@@ -65,24 +74,29 @@ impl Severity {
     }
 }
 
-/// One byte position in a source.
-///
-/// The representation is provisional. It identifies a source by its path as
-/// given, and the position by the valid UTF-8 text that precedes it, because
-/// the only positioned diagnostic is for an input that never entered the
-/// source table. Locations become byte ranges in loaded sources when source
-/// spans have their first consumer.
+/// The place in a source that a diagnostic is about.
 #[derive(Debug)]
-pub(crate) struct Location {
-    path: PathBuf,
-    before: String,
+pub(crate) struct Location(LocationForm);
+
+#[derive(Debug)]
+enum LocationForm {
+    /// A span in a source of the table passed to [`render`].
+    Source { source: SourceId, span: Span },
+    /// A position in an input that never entered the source table, given by
+    /// the path as given and the text that precedes the position.
+    Unloaded { path: PathBuf, before: String },
 }
 
 impl Location {
-    /// The position just after `before`, which is the text of the source at
-    /// `path` that precedes the position.
-    pub(crate) fn new(path: PathBuf, before: String) -> Self {
-        Self { path, before }
+    /// The span `span` in the loaded source `source`.
+    pub(crate) fn source(source: SourceId, span: Span) -> Self {
+        Self(LocationForm::Source { source, span })
+    }
+
+    /// The position just after `before`, which is the text of the unloaded
+    /// input at `path` that precedes the position.
+    pub(crate) fn unloaded(path: PathBuf, before: String) -> Self {
+        Self(LocationForm::Unloaded { path, before })
     }
 }
 
@@ -120,7 +134,14 @@ impl Diagnostic {
 }
 
 /// Returns the human-readable text of `diagnostic`, each line ending in LF.
-pub(crate) fn render(diagnostic: &Diagnostic) -> String {
+///
+/// `sources` holds the source of a source location.
+///
+/// # Panics
+///
+/// Panics if the location is in a source that `sources` does not hold, or its
+/// span starts outside the text or inside a character.
+pub(crate) fn render(diagnostic: &Diagnostic, sources: &SourceTable) -> String {
     let header = format!(
         "{}[{}]: {}\n",
         diagnostic.severity.name(),
@@ -130,8 +151,19 @@ pub(crate) fn render(diagnostic: &Diagnostic) -> String {
     let Some(location) = &diagnostic.location else {
         return header;
     };
-    let (line, column) = line_column(&location.before);
-    format!("{header} --> {}:{line}:{column}\n", location.path.display())
+    let (path, before): (&Path, &str) = match &location.0 {
+        LocationForm::Source { source, span } => {
+            let file = sources.get(*source);
+            let before = usize::try_from(span.lo())
+                .ok()
+                .and_then(|lo| file.text().get(..lo))
+                .expect("a source location starts at a character boundary of its text");
+            (file.path(), before)
+        }
+        LocationForm::Unloaded { path, before } => (path, before),
+    };
+    let (line, column) = line_column(before);
+    format!("{header} --> {}:{line}:{column}\n", path.display())
 }
 
 /// Returns the line and column of the position just after `before`.
@@ -154,7 +186,9 @@ fn count<T>(items: impl Iterator<Item = T>) -> u64 {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [DiagnosticKind; 10] = [
+    use crate::source::ByteOffset;
+
+    const ALL_KINDS: [DiagnosticKind; 12] = [
         DiagnosticKind::InputNotFound,
         DiagnosticKind::InputPermissionDenied,
         DiagnosticKind::InputIsDirectory,
@@ -162,6 +196,8 @@ mod tests {
         DiagnosticKind::InputTooLarge,
         DiagnosticKind::InputNotUtf8,
         DiagnosticKind::TooManySourceFiles,
+        DiagnosticKind::LexicalError,
+        DiagnosticKind::UnsupportedSyntax,
         DiagnosticKind::CompilationNotImplemented,
         DiagnosticKind::InvalidCommandLine,
         DiagnosticKind::InternalCompilerError,
@@ -255,24 +291,79 @@ mod tests {
             None,
         );
         assert_eq!(
-            render(&diagnostic),
+            render(&diagnostic, &SourceTable::default()),
             "error[input-not-found]: input main.rs does not exist\n"
         );
     }
 
     #[test]
-    fn renders_a_diagnostic_with_a_location() {
+    fn renders_a_diagnostic_with_an_unloaded_location() {
         let diagnostic = Diagnostic::error(
             DiagnosticKind::InputNotUtf8,
             "not UTF-8".to_owned(),
-            Some(Location::new(
+            Some(Location::unloaded(
                 PathBuf::from("src/main.rs"),
                 "fn main() {}\n// 中 ".to_owned(),
             )),
         );
         assert_eq!(
-            render(&diagnostic),
+            render(&diagnostic, &SourceTable::default()),
             "error[input-not-utf8]: not UTF-8\n --> src/main.rs:2:6\n"
+        );
+    }
+
+    fn span(lo: usize, hi: usize) -> Span {
+        Span::new(
+            ByteOffset::try_from(lo).unwrap(),
+            ByteOffset::try_from(hi).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn renders_a_source_location_at_the_start_of_its_span() {
+        let mut sources = SourceTable::default();
+        sources.add_text("src/other.rs", "fn other() {}\n");
+        let text = "\u{FEFF}fn main() {}\n// 中 x\n  `\n";
+        let id = sources.add_text("src/main.rs", text);
+        let diagnostic = Diagnostic::error(
+            DiagnosticKind::LexicalError,
+            "bad".to_owned(),
+            Some(Location::source(id, span(27, 28))),
+        );
+        assert_eq!(
+            render(&diagnostic, &sources),
+            "error[lexical-error]: bad\n --> src/main.rs:3:3\n"
+        );
+    }
+
+    #[test]
+    fn renders_a_source_location_after_a_byte_order_mark_on_line_1() {
+        let mut sources = SourceTable::default();
+        let id = sources.add_text("main.rs", "\u{FEFF}fn `");
+        let diagnostic = Diagnostic::error(
+            DiagnosticKind::LexicalError,
+            "bad".to_owned(),
+            Some(Location::source(id, span(6, 7))),
+        );
+        assert_eq!(
+            render(&diagnostic, &sources),
+            "error[lexical-error]: bad\n --> main.rs:1:4\n"
+        );
+    }
+
+    #[test]
+    fn renders_an_empty_source_span_at_the_end_of_the_text() {
+        let mut sources = SourceTable::default();
+        let id = sources.add_text("main.rs", "fn main() {}\n/* x");
+        let diagnostic = Diagnostic::error(
+            DiagnosticKind::LexicalError,
+            "bad".to_owned(),
+            Some(Location::source(id, span(17, 17))),
+        );
+        assert_eq!(
+            render(&diagnostic, &sources),
+            "error[lexical-error]: bad\n --> main.rs:2:5\n"
         );
     }
 
@@ -300,7 +391,7 @@ mod tests {
     fn renders_an_internal_compiler_error_for_a_string_payload() {
         let diagnostic = Diagnostic::internal_compiler_error(Some("index out of bounds"));
         assert_eq!(
-            render(&diagnostic),
+            render(&diagnostic, &SourceTable::default()),
             "error[internal-compiler-error]: index out of bounds\n"
         );
     }
@@ -309,7 +400,7 @@ mod tests {
     fn renders_an_internal_compiler_error_for_a_non_string_payload() {
         let diagnostic = Diagnostic::internal_compiler_error(None);
         assert_eq!(
-            render(&diagnostic),
+            render(&diagnostic, &SourceTable::default()),
             "error[internal-compiler-error]: the panic payload is not a string\n"
         );
     }

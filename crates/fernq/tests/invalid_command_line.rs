@@ -5,12 +5,41 @@ use std::process::Command;
 
 const CASES: &[(&str, &[&str])] = &[
     ("no arguments", &[]),
-    ("unknown option", &["main.rs", "-o", "main", "--edition"]),
+    (
+        "unknown option",
+        &["main.rs", "-o", "main", "--edition", "2024", "--verbose"],
+    ),
     ("-o without a value", &["main.rs", "-o"]),
     ("-o twice", &["main.rs", "-o", "a", "-o", "b"]),
     ("two inputs", &["a.rs", "b.rs", "-o", "main"]),
     ("input without -o", &["main.rs"]),
     ("help with other arguments", &["-h", "main.rs"]),
+    ("missing --edition", &["main.rs", "-o", "main"]),
+    (
+        "--edition twice",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2021",
+            "--edition",
+            "2024",
+        ],
+    ),
+    (
+        "--edition without a value",
+        &["main.rs", "-o", "main", "--edition"],
+    ),
+    (
+        "unknown edition",
+        &["main.rs", "-o", "main", "--edition", "2027"],
+    ),
+    ("empty edition", &["main.rs", "-o", "main", "--edition", ""]),
+    (
+        "attached edition value",
+        &["main.rs", "-o", "main", "--edition=2024"],
+    ),
 ];
 
 const HEADER: &str = "error[invalid-command-line]:";

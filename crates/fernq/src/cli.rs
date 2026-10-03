@@ -7,25 +7,29 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::edition::Edition;
+
 /// The synopsis of a valid invocation.
-pub(crate) const USAGE: &str = "usage: fernq <INPUT> -o <OUTPUT>";
+pub(crate) const USAGE: &str = "usage: fernq <INPUT> -o <OUTPUT> --edition <EDITION>";
 
 /// A command line that the grammar accepts.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     /// `-h` or `--help` as the only argument.
     Help,
-    /// One input path and one output path.
+    /// One input path, one output path, and one edition.
     Compile(Invocation),
 }
 
-/// The paths of a valid invocation, both non-empty.
+/// The configuration of a valid invocation: two non-empty paths and the
+/// edition of the input.
 ///
 /// Only [`parse`] constructs an invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Invocation {
     input: PathBuf,
     output: PathBuf,
+    edition: Edition,
 }
 
 impl Invocation {
@@ -36,13 +40,18 @@ impl Invocation {
     pub(crate) fn output(&self) -> &Path {
         &self.output
     }
+
+    pub(crate) fn edition(&self) -> Edition {
+        self.edition
+    }
 }
 
 /// The grammar rule that a command line violates.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UsageError {
     NoArguments,
-    /// A token that starts with `-` and is not `-o`, `-h`, or `--help`.
+    /// A token that starts with `-` and is not `-o`, `--edition`, `-h`, or
+    /// `--help`.
     UnknownOption(OsString),
     /// `-o` is the last token.
     MissingOutputValue,
@@ -51,18 +60,26 @@ pub(crate) enum UsageError {
     EmptyInput,
     /// An input path after the first one.
     ExtraInput(OsString),
+    /// `--edition` is the last token.
+    MissingEditionValue,
+    DuplicateEdition,
+    /// The value after `--edition` is not exactly one of the edition names.
+    UnknownEdition(OsString),
     MissingInput,
     MissingOutput,
+    MissingEdition,
     /// `-h` or `--help` together with other arguments.
     HelpWithArguments,
 }
 
 /// Parses the arguments that follow the program name.
 ///
-/// `<INPUT>` and `-o <OUTPUT>` may appear in either order. The token after
-/// `-o` is the output path verbatim, even when it starts with `-`. Options
-/// match only as exact tokens, so `-oFILE`, `-o=FILE`, `-`, and `--` are
-/// unknown options. Paths need not be valid UTF-8.
+/// `<INPUT>`, `-o <OUTPUT>`, and `--edition <EDITION>` may appear in any
+/// order. The token after `-o` is the output path verbatim, even when it
+/// starts with `-`; the token after `--edition` is its value in the same way.
+/// Options match only as exact tokens, so `-oFILE`, `-o=FILE`,
+/// `--edition=2024`, `-`, and `--` are unknown options. Paths need not be
+/// valid UTF-8.
 pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
     match args.as_slice() {
         [] => return Err(UsageError::NoArguments),
@@ -72,6 +89,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
 
     let mut input = None;
     let mut output = None;
+    let mut edition = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if is_help(&arg) {
@@ -88,6 +106,17 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
                 return Err(UsageError::EmptyOutput);
             }
             output = Some(PathBuf::from(path));
+        } else if arg == "--edition" {
+            if edition.is_some() {
+                return Err(UsageError::DuplicateEdition);
+            }
+            let Some(value) = args.next() else {
+                return Err(UsageError::MissingEditionValue);
+            };
+            let Some(value) = value.to_str().and_then(Edition::from_name) else {
+                return Err(UsageError::UnknownEdition(value));
+            };
+            edition = Some(value);
         } else if starts_with_dash(&arg) {
             return Err(UsageError::UnknownOption(arg));
         } else if input.is_some() {
@@ -101,7 +130,12 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
 
     let input = input.ok_or(UsageError::MissingInput)?;
     let output = output.ok_or(UsageError::MissingOutput)?;
-    Ok(Command::Compile(Invocation { input, output }))
+    let edition = edition.ok_or(UsageError::MissingEdition)?;
+    Ok(Command::Compile(Invocation {
+        input,
+        output,
+        edition,
+    }))
 }
 
 fn is_help(arg: &OsStr) -> bool {
@@ -122,16 +156,21 @@ mod tests {
     }
 
     fn compile(input: &str, output: &str) -> Result<Command, UsageError> {
+        compile_edition(input, output, Edition::E2024)
+    }
+
+    fn compile_edition(input: &str, output: &str, edition: Edition) -> Result<Command, UsageError> {
         Ok(Command::Compile(Invocation {
             input: PathBuf::from(input),
             output: PathBuf::from(output),
+            edition,
         }))
     }
 
     #[test]
     fn accepts_input_before_output() {
         assert_eq!(
-            parse_strs(&["main.rs", "-o", "main"]),
+            parse_strs(&["main.rs", "-o", "main", "--edition", "2024"]),
             compile("main.rs", "main")
         );
     }
@@ -139,9 +178,33 @@ mod tests {
     #[test]
     fn accepts_output_before_input() {
         assert_eq!(
-            parse_strs(&["-o", "main", "main.rs"]),
+            parse_strs(&["-o", "main", "main.rs", "--edition", "2024"]),
             compile("main.rs", "main")
         );
+    }
+
+    #[test]
+    fn accepts_each_edition_before_and_after_the_paths() {
+        for (name, edition) in [
+            ("2015", Edition::E2015),
+            ("2018", Edition::E2018),
+            ("2021", Edition::E2021),
+            ("2024", Edition::E2024),
+        ] {
+            let expected = compile_edition("main.rs", "main", edition);
+            assert_eq!(
+                parse_strs(&["--edition", name, "main.rs", "-o", "main"]),
+                expected
+            );
+            assert_eq!(
+                parse_strs(&["main.rs", "--edition", name, "-o", "main"]),
+                expected
+            );
+            assert_eq!(
+                parse_strs(&["main.rs", "-o", "main", "--edition", name]),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -153,17 +216,83 @@ mod tests {
     #[test]
     fn takes_the_token_after_o_verbatim() {
         assert_eq!(
-            parse_strs(&["main.rs", "-o", "-out"]),
+            parse_strs(&["main.rs", "-o", "-out", "--edition", "2024"]),
             compile("main.rs", "-out")
         );
         assert_eq!(
-            parse_strs(&["main.rs", "-o", "-h"]),
+            parse_strs(&["main.rs", "-o", "-h", "--edition", "2024"]),
             compile("main.rs", "-h")
         );
         assert_eq!(
-            parse_strs(&["main.rs", "-o", "--"]),
+            parse_strs(&["main.rs", "-o", "--", "--edition", "2024"]),
             compile("main.rs", "--")
         );
+        assert_eq!(
+            parse_strs(&["main.rs", "-o", "--edition", "--edition", "2024"]),
+            compile("main.rs", "--edition")
+        );
+    }
+
+    #[test]
+    fn takes_the_token_after_edition_as_its_value() {
+        assert!(matches!(
+            parse_strs(&["main.rs", "-o", "main", "--edition", "-o"]),
+            Err(UsageError::UnknownEdition(value)) if value == "-o"
+        ));
+    }
+
+    #[test]
+    fn rejects_a_missing_edition() {
+        assert_eq!(
+            parse_strs(&["main.rs", "-o", "main"]),
+            Err(UsageError::MissingEdition)
+        );
+    }
+
+    #[test]
+    fn rejects_edition_as_the_last_token() {
+        assert_eq!(
+            parse_strs(&["main.rs", "-o", "main", "--edition"]),
+            Err(UsageError::MissingEditionValue)
+        );
+    }
+
+    #[test]
+    fn rejects_edition_twice() {
+        assert_eq!(
+            parse_strs(&[
+                "main.rs",
+                "-o",
+                "main",
+                "--edition",
+                "2021",
+                "--edition",
+                "2024"
+            ]),
+            Err(UsageError::DuplicateEdition)
+        );
+        assert_eq!(
+            parse_strs(&["main.rs", "--edition", "2024", "--edition"]),
+            Err(UsageError::DuplicateEdition)
+        );
+    }
+
+    #[test]
+    fn rejects_an_unknown_edition_and_keeps_its_value() {
+        for value in ["2027", "future", "", " 2024"] {
+            assert_eq!(
+                parse_strs(&["main.rs", "-o", "main", "--edition", value]),
+                Err(UsageError::UnknownEdition(OsString::from(value)))
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_attached_edition_value_as_an_unknown_option() {
+        assert!(matches!(
+            parse_strs(&["main.rs", "-o", "main", "--edition=2024"]),
+            Err(UsageError::UnknownOption(_))
+        ));
     }
 
     #[test]
@@ -202,7 +331,7 @@ mod tests {
     #[test]
     fn rejects_an_unknown_option() {
         assert!(matches!(
-            parse_strs(&["main.rs", "-o", "main", "--edition"]),
+            parse_strs(&["main.rs", "-o", "main", "--verbose"]),
             Err(UsageError::UnknownOption(_))
         ));
     }
@@ -286,11 +415,36 @@ mod tests {
         let input = OsString::from_vec(b"in\xffput.rs".to_vec());
         let output = OsString::from_vec(b"out\xffput".to_vec());
         assert_eq!(
-            parse(vec![input.clone(), OsString::from("-o"), output.clone()]),
+            parse(vec![
+                input.clone(),
+                OsString::from("-o"),
+                output.clone(),
+                OsString::from("--edition"),
+                OsString::from("2024"),
+            ]),
             Ok(Command::Compile(Invocation {
                 input: PathBuf::from(input),
                 output: PathBuf::from(output),
+                edition: Edition::E2024,
             }))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_non_utf8_edition_value_and_keeps_it() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = OsString::from_vec(b"20\xff24".to_vec());
+        assert_eq!(
+            parse(vec![
+                OsString::from("main.rs"),
+                OsString::from("-o"),
+                OsString::from("main"),
+                OsString::from("--edition"),
+                value.clone(),
+            ]),
+            Err(UsageError::UnknownEdition(value))
         );
     }
 

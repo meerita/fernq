@@ -66,6 +66,7 @@ fn fernq(input: &Path, output_path: &Path) -> Output {
         .arg(input)
         .arg("-o")
         .arg(output_path)
+        .args(["--edition", "2024"])
         .output()
         .expect("the fernq binary runs")
 }

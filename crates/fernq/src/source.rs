@@ -8,8 +8,9 @@
 //! A file must be UTF-8 and at most [`MAX_SOURCE_LEN`] bytes long. Its text is
 //! stored exactly as read: the byte order mark, CRLF line endings, and a
 //! shebang line are kept for the lexer to handle. A [`ByteOffset`] is a
-//! position in bytes from the start of one file; line and column are not part
-//! of the source model.
+//! position in bytes from the start of one file, and a [`Span`] is a range of
+//! them; neither identifies its file. Line and column are not part of the
+//! source model.
 
 use std::fmt;
 use std::fs::File;
@@ -28,7 +29,7 @@ pub(crate) const MAX_SOURCE_LEN: u32 = u32::MAX;
 pub(crate) struct SourceId(u32);
 
 /// A position in bytes from the start of one source file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ByteOffset(u32);
 
 impl TryFrom<usize> for ByteOffset {
@@ -39,9 +40,45 @@ impl TryFrom<usize> for ByteOffset {
     }
 }
 
+impl TryFrom<ByteOffset> for usize {
+    type Error = TryFromIntError;
+
+    fn try_from(offset: ByteOffset) -> Result<Self, Self::Error> {
+        usize::try_from(offset.0)
+    }
+}
+
 impl fmt::Display for ByteOffset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+/// The half-open byte range `lo..hi` of one source file, with `lo <= hi`.
+///
+/// Offsets are in the coordinates of the text as stored, before any lexical
+/// normalization. An empty span is a position between two bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Span {
+    lo: ByteOffset,
+    hi: ByteOffset,
+}
+
+impl Span {
+    /// Returns the span `lo..hi`, or `None` when `lo > hi`.
+    pub(crate) fn new(lo: ByteOffset, hi: ByteOffset) -> Option<Self> {
+        (lo <= hi).then_some(Self { lo, hi })
+    }
+
+    /// The offset of the first byte in the span.
+    pub(crate) fn lo(self) -> ByteOffset {
+        self.lo
+    }
+
+    /// The offset just past the last byte in the span.
+    #[cfg(test)]
+    pub(crate) fn hi(self) -> ByteOffset {
+        self.hi
     }
 }
 
@@ -109,6 +146,14 @@ impl SourceTable {
         }
         self.files.push(SourceFile { path, text });
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+impl SourceTable {
+    /// Adds `text` as the file at `path` without reading the file system.
+    pub(crate) fn add_text(&mut self, path: &str, text: &str) -> SourceId {
+        self.add(PathBuf::from(path), text.to_owned()).unwrap()
     }
 }
 
@@ -296,6 +341,36 @@ mod tests {
                 limit: MAX_SOURCE_LEN
             })
         ));
+    }
+
+    #[test]
+    fn a_span_may_be_empty() {
+        let span = Span::new(ByteOffset(3), ByteOffset(3)).unwrap();
+        assert_eq!(
+            span,
+            Span {
+                lo: ByteOffset(3),
+                hi: ByteOffset(3)
+            }
+        );
+    }
+
+    #[test]
+    fn a_span_keeps_its_ends() {
+        let span = Span::new(ByteOffset(0), ByteOffset(u32::MAX)).unwrap();
+        assert_eq!(span.lo(), ByteOffset(0));
+        assert_eq!(
+            span,
+            Span {
+                lo: ByteOffset(0),
+                hi: ByteOffset(u32::MAX)
+            }
+        );
+    }
+
+    #[test]
+    fn a_span_rejects_lo_after_hi() {
+        assert_eq!(Span::new(ByteOffset(4), ByteOffset(3)), None);
     }
 
     #[test]
