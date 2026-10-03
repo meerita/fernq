@@ -43,7 +43,8 @@ fn non_utf8_input_is_rejected_at_the_first_invalid_byte() {
     );
 }
 
-/// The input is a sparse file one byte longer than `u32::MAX` bytes.
+/// The input is a sparse file one byte longer than `u32::MAX` bytes, and the
+/// command line raises the limit to `u32::MAX`, the representable maximum.
 ///
 /// The test removes the file before asserting, so a failure does not leave
 /// it behind: its apparent size is 4 GiB, and a tool that copies or scans the
@@ -56,17 +57,51 @@ fn oversized_input_is_rejected() {
         .and_then(|file| file.set_len(u64::from(u32::MAX) + 1))
         .expect("the sparse input file is created");
     let output_path = dir.join("main");
+    let output = fernq_with(&input, &output_path, &["--max-input-bytes", "4294967295"]);
+    fs::remove_file(&input).expect("the sparse input file is removed");
+    assert_rejected(&output, &output_path, "input-too-large");
+}
+
+/// Without `--max-input-bytes`, a sparse file one byte over 128 MiB is
+/// rejected from its metadata length, without reading it.
+#[test]
+fn input_over_the_default_limit_is_rejected() {
+    let dir = clear_test_dir("input_over_the_default_limit_is_rejected");
+    let input = dir.join("main.rs");
+    File::create(&input)
+        .and_then(|file| file.set_len(128 * 1024 * 1024 + 1))
+        .expect("the sparse input file is created");
+    let output_path = dir.join("main");
     let output = fernq(&input, &output_path);
     fs::remove_file(&input).expect("the sparse input file is removed");
     assert_rejected(&output, &output_path, "input-too-large");
 }
 
+/// A limit below the input size rejects it; a limit equal to it loads it.
+#[test]
+fn the_input_limit_is_inclusive() {
+    let dir = clear_test_dir("the_input_limit_is_inclusive");
+    let input = dir.join("main.rs");
+    fs::write(&input, "fn main() {}\n").expect("the input file is written");
+    let output_path = dir.join("main");
+    let output = fernq_with(&input, &output_path, &["--max-input-bytes", "12"]);
+    assert_rejected(&output, &output_path, "input-too-large");
+    let output = fernq_with(&input, &output_path, &["--max-input-bytes", "13"]);
+    assert_rejected(&output, &output_path, "compilation-not-implemented");
+}
+
 fn fernq(input: &Path, output_path: &Path) -> Output {
+    fernq_with(input, output_path, &[])
+}
+
+/// Runs `fernq <input> -o <output_path> --edition 2024` followed by `extra`.
+fn fernq_with(input: &Path, output_path: &Path, extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fernq"))
         .arg(input)
         .arg("-o")
         .arg(output_path)
         .args(["--edition", "2024"])
+        .args(extra)
         .output()
         .expect("the fernq binary runs")
 }

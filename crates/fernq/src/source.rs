@@ -5,7 +5,7 @@
 //! compilation. A file keeps its path as given, without canonicalization.
 //! Files are immutable after loading; consumers borrow them from the table.
 //!
-//! A file must be UTF-8 and at most [`MAX_SOURCE_LEN`] bytes long. Its text is
+//! A file must be UTF-8 and at most its [`SourceLimit`] long. Its text is
 //! stored exactly as read: the byte order mark, CRLF line endings, and a
 //! shebang line are kept for the lexer to handle. A [`ByteOffset`] is a
 //! position in bytes from the start of one file, and a [`Span`] is a range of
@@ -19,8 +19,43 @@ use std::num::TryFromIntError;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
-/// The maximum length of one source file, in bytes.
-pub(crate) const MAX_SOURCE_LEN: u32 = u32::MAX;
+/// The length, in bytes, of the longest text whose offsets a [`ByteOffset`]
+/// can represent. No [`SourceLimit`] exceeds it.
+pub(crate) const MAX_REPRESENTABLE_SOURCE_LEN: u32 = u32::MAX;
+
+/// The admission limit of one source file: the largest number of bytes the
+/// [`SourceTable`] loads.
+///
+/// It is a Fernq resource policy, not a Rust rule: it bounds the memory that
+/// one input can make the compiler take, about one byte per admitted byte.
+/// It is at least 1 and at most [`MAX_REPRESENTABLE_SOURCE_LEN`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceLimit(u32);
+
+impl SourceLimit {
+    /// The limit when the command line sets none: 128 MiB.
+    pub(crate) const DEFAULT: Self = Self(128 * 1024 * 1024);
+
+    /// Returns the limit of `bytes`, or `None` when `bytes` is 0 or greater
+    /// than [`MAX_REPRESENTABLE_SOURCE_LEN`].
+    pub(crate) fn new(bytes: u64) -> Option<Self> {
+        u32::try_from(bytes)
+            .ok()
+            .filter(|&bytes| bytes != 0)
+            .map(Self)
+    }
+
+    /// The limit in bytes.
+    pub(crate) fn bytes(self) -> u32 {
+        self.0
+    }
+}
+
+// A limit is a nonzero `u32`, so it never exceeds the representable length.
+const _: () = assert!(
+    MAX_REPRESENTABLE_SOURCE_LEN == u32::MAX && SourceLimit::DEFAULT.0 != 0,
+    "every source limit lies in the representable range"
+);
 
 /// The identity of a file in the [`SourceTable`] that loaded it.
 ///
@@ -83,7 +118,7 @@ impl Span {
 }
 
 /// A loaded source file. Its text is valid UTF-8 of at most
-/// [`MAX_SOURCE_LEN`] bytes.
+/// [`MAX_REPRESENTABLE_SOURCE_LEN`] bytes.
 #[derive(Debug)]
 pub(crate) struct SourceFile {
     path: PathBuf,
@@ -103,8 +138,9 @@ impl SourceFile {
 
     /// The length of the text, which is also the offset just past its end.
     pub(crate) fn len(&self) -> ByteOffset {
-        ByteOffset::try_from(self.text().len())
-            .expect("the source table admits no text longer than MAX_SOURCE_LEN bytes")
+        ByteOffset::try_from(self.text().len()).expect(
+            "the source table admits no text longer than MAX_REPRESENTABLE_SOURCE_LEN bytes",
+        )
     }
 }
 
@@ -115,11 +151,11 @@ pub(crate) struct SourceTable {
 }
 
 impl SourceTable {
-    /// Loads the file at `path` and returns its id.
+    /// Loads the file at `path`, of at most `limit` bytes, and returns its id.
     ///
     /// A path that names an already loaded file loads it again under a new id.
-    pub(crate) fn load(&mut self, path: &Path) -> Result<SourceId, LoadError> {
-        let text = read_file(path, MAX_SOURCE_LEN)?;
+    pub(crate) fn load(&mut self, path: &Path, limit: SourceLimit) -> Result<SourceId, LoadError> {
+        let text = read_file(path, limit.bytes())?;
         self.add(path.to_path_buf(), text)
     }
 
@@ -145,7 +181,7 @@ impl SourceTable {
             .map_err(|_| LoadError::TooManyFiles)?;
         if ByteOffset::try_from(text.len()).is_err() {
             return Err(LoadError::TooLarge {
-                limit: MAX_SOURCE_LEN,
+                limit: MAX_REPRESENTABLE_SOURCE_LEN,
             });
         }
         self.files.push(SourceFile { path, text });
@@ -325,6 +361,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_unbounded_reader_after_one_byte_over_the_limit() {
+        let result = read_text(io::repeat(b' '), 4, 0);
+        assert!(
+            matches!(result, Err(LoadError::TooLarge { limit: 4 })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_source_limit_lies_in_the_representable_range() {
+        assert_eq!(SourceLimit::new(0), None);
+        assert_eq!(SourceLimit::new(1).map(SourceLimit::bytes), Some(1));
+        assert_eq!(
+            SourceLimit::new(u64::from(u32::MAX)).map(SourceLimit::bytes),
+            Some(MAX_REPRESENTABLE_SOURCE_LEN)
+        );
+        assert_eq!(SourceLimit::new(u64::from(u32::MAX) + 1), None);
+        assert_eq!(SourceLimit::new(u64::MAX), None);
+        assert_eq!(SourceLimit::DEFAULT.bytes(), 134_217_728);
+    }
+
+    #[test]
     fn keeps_the_byte_order_mark_and_crlf() {
         let input = b"\xef\xbb\xbffn main() {}\r\n";
         assert_eq!(read(input, 32).unwrap().as_bytes(), input);
@@ -346,9 +404,9 @@ mod tests {
     #[test]
     fn rejects_a_length_above_u32_max() {
         assert!(matches!(
-            check_len(u64::from(u32::MAX) + 1, MAX_SOURCE_LEN),
+            check_len(u64::from(u32::MAX) + 1, MAX_REPRESENTABLE_SOURCE_LEN),
             Err(LoadError::TooLarge {
-                limit: MAX_SOURCE_LEN
+                limit: MAX_REPRESENTABLE_SOURCE_LEN
             })
         ));
     }

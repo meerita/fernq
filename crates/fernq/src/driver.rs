@@ -29,7 +29,7 @@ use crate::cli::{self, Command, Invocation, USAGE, UsageError};
 use crate::diagnostic::{self, Diagnostic, DiagnosticKind, Location};
 use crate::edition::Edition;
 use crate::lexer::{Invalid, InvalidEscape, LexError, LexErrorKind, Lexer, TokenKind, Unsupported};
-use crate::source::{ByteOffset, LoadError, SourceId, SourceTable};
+use crate::source::{ByteOffset, LoadError, MAX_REPRESENTABLE_SOURCE_LEN, SourceId, SourceTable};
 
 const HELP: &str = "\
 Compile a Rust source file. Fernq lexes the input; compilation after lexing
@@ -42,6 +42,9 @@ Options:
   -o <OUTPUT>            Write the compiled output to OUTPUT
   --edition <EDITION>    Rust edition of INPUT: 2015, 2018, 2021, or 2024.
                          Required; there is no default.
+  --max-input-bytes <BYTES>
+                         Largest INPUT to load, in bytes: 1 to 4294967295.
+                         Default: 134217728 (128 MiB)
   -h, --help             Print this help
 
 Exit status:
@@ -88,7 +91,7 @@ fn help() -> ExitCode {
 
 fn compile(invocation: &Invocation) -> ExitCode {
     let mut sources = SourceTable::default();
-    let diagnostic = match sources.load(invocation.input()) {
+    let diagnostic = match sources.load(invocation.input(), invocation.input_limit()) {
         Ok(id) => {
             let input = sources.get(id);
             match lex(id, input.text(), invocation.edition()) {
@@ -129,7 +132,7 @@ fn load_failure(input: &Path, error: LoadError) -> Diagnostic {
         ),
         LoadError::TooLarge { limit } => (
             DiagnosticKind::InputTooLarge,
-            format!("input file {input_display} is larger than {limit} bytes"),
+            too_large_message(input, limit),
             None,
         ),
         LoadError::NotUtf8(invalid) => (
@@ -150,6 +153,20 @@ fn load_failure(input: &Path, error: LoadError) -> Diagnostic {
         ),
     };
     Diagnostic::error(kind, message, location)
+}
+
+fn too_large_message(input: &Path, limit: u32) -> String {
+    let message = format!(
+        "input file {} is larger than {limit} bytes",
+        input.display()
+    );
+    if limit < MAX_REPRESENTABLE_SOURCE_LEN {
+        format!(
+            "{message}; --max-input-bytes raises the limit up to {MAX_REPRESENTABLE_SOURCE_LEN}"
+        )
+    } else {
+        message
+    }
 }
 
 /// Lexes `text`, the text of the source `source`, to end of file.
@@ -303,6 +320,17 @@ fn usage_error(error: &UsageError) -> ExitCode {
         UsageError::MissingInput => "missing input path".to_owned(),
         UsageError::MissingOutput => "missing output path; pass -o <OUTPUT>".to_owned(),
         UsageError::MissingEdition => "missing edition; pass --edition <EDITION>".to_owned(),
+        UsageError::MissingInputLimitValue => {
+            "option --max-input-bytes requires a value: a number of bytes from 1 to 4294967295"
+                .to_owned()
+        }
+        UsageError::DuplicateInputLimit => {
+            "option --max-input-bytes is given more than once".to_owned()
+        }
+        UsageError::InvalidInputLimit(token) => format!(
+            "invalid value '{}' for --max-input-bytes; expected a number of bytes from 1 to 4294967295",
+            token.display()
+        ),
         UsageError::HelpWithArguments => "-h and --help take no other arguments".to_owned(),
     };
     let diagnostic = Diagnostic::error(DiagnosticKind::InvalidCommandLine, message, None);

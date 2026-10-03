@@ -184,6 +184,39 @@ fn every_edition_in_any_position_reaches_compilation() {
     }
 }
 
+/// `--max-input-bytes`, before or after the paths, with a limit at or above
+/// the input size, reaches compilation.
+#[test]
+fn an_input_limit_in_any_position_reaches_compilation() {
+    let dir = clear_test_dir("an_input_limit_in_any_position_reaches_compilation");
+    let input = dir.join("main.rs");
+    fs::write(&input, "fn main() {}\n").expect("the input file is written");
+    let output_path = dir.join("main");
+    for limit in ["13", "4294967295"] {
+        let limit_first = [
+            OsStr::new("--max-input-bytes"),
+            OsStr::new(limit),
+            input.as_os_str(),
+            OsStr::new("-o"),
+            output_path.as_os_str(),
+            OsStr::new("--edition"),
+            OsStr::new("2024"),
+        ];
+        let limit_last = [
+            input.as_os_str(),
+            OsStr::new("-o"),
+            output_path.as_os_str(),
+            OsStr::new("--edition"),
+            OsStr::new("2024"),
+            OsStr::new("--max-input-bytes"),
+            OsStr::new(limit),
+        ];
+        for args in [limit_first, limit_last] {
+            assert_status_1(&args, &output_path, "compilation-not-implemented");
+        }
+    }
+}
+
 /// Runs `fernq <input> -o <output> --edition 2024` and asserts status 1,
 /// empty stdout, a diagnostic of kind `kind` on stderr, and no file at
 /// `output`.

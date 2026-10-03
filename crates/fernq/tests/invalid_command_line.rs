@@ -40,6 +40,90 @@ const CASES: &[(&str, &[&str])] = &[
         "attached edition value",
         &["main.rs", "-o", "main", "--edition=2024"],
     ),
+    (
+        "--max-input-bytes without a value",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+        ],
+    ),
+    (
+        "--max-input-bytes twice",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+            "1",
+            "--max-input-bytes",
+            "2",
+        ],
+    ),
+    (
+        "zero --max-input-bytes",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+            "0",
+        ],
+    ),
+    (
+        "--max-input-bytes above the representable limit",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+            "4294967296",
+        ],
+    ),
+    (
+        "non-decimal --max-input-bytes",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+            "128MiB",
+        ],
+    ),
+    (
+        "empty --max-input-bytes",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes",
+            "",
+        ],
+    ),
+    (
+        "attached --max-input-bytes value",
+        &[
+            "main.rs",
+            "-o",
+            "main",
+            "--edition",
+            "2024",
+            "--max-input-bytes=4",
+        ],
+    ),
 ];
 
 const HEADER: &str = "error[invalid-command-line]:";
