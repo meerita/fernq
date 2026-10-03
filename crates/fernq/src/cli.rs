@@ -8,21 +8,23 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use crate::edition::Edition;
+use crate::source::SourceLimit;
 
 /// The synopsis of a valid invocation.
-pub(crate) const USAGE: &str = "usage: fernq <INPUT> -o <OUTPUT> --edition <EDITION>";
+pub(crate) const USAGE: &str =
+    "usage: fernq <INPUT> -o <OUTPUT> --edition <EDITION> [--max-input-bytes <BYTES>]";
 
 /// A command line that the grammar accepts.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     /// `-h` or `--help` as the only argument.
     Help,
-    /// One input path, one output path, and one edition.
+    /// One input path, one output path, one edition, and the input size limit.
     Compile(Invocation),
 }
 
-/// The configuration of a valid invocation: two non-empty paths and the
-/// edition of the input.
+/// The configuration of a valid invocation: two non-empty paths, the edition
+/// of the input, and the admission limit of the input.
 ///
 /// Only [`parse`] constructs an invocation.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub(crate) struct Invocation {
     input: PathBuf,
     output: PathBuf,
     edition: Edition,
+    input_limit: SourceLimit,
 }
 
 impl Invocation {
@@ -44,14 +47,20 @@ impl Invocation {
     pub(crate) fn edition(&self) -> Edition {
         self.edition
     }
+
+    /// The admission limit of the input: `--max-input-bytes`, or
+    /// [`SourceLimit::DEFAULT`] when the option is absent.
+    pub(crate) fn input_limit(&self) -> SourceLimit {
+        self.input_limit
+    }
 }
 
 /// The grammar rule that a command line violates.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UsageError {
     NoArguments,
-    /// A token that starts with `-` and is not `-o`, `--edition`, `-h`, or
-    /// `--help`.
+    /// A token that starts with `-` and is not `-o`, `--edition`,
+    /// `--max-input-bytes`, `-h`, or `--help`.
     UnknownOption(OsString),
     /// `-o` is the last token.
     MissingOutputValue,
@@ -68,15 +77,22 @@ pub(crate) enum UsageError {
     MissingInput,
     MissingOutput,
     MissingEdition,
+    /// `--max-input-bytes` is the last token.
+    MissingInputLimitValue,
+    DuplicateInputLimit,
+    /// The value after `--max-input-bytes` is not a decimal number of bytes
+    /// from 1 to 4,294,967,295.
+    InvalidInputLimit(OsString),
     /// `-h` or `--help` together with other arguments.
     HelpWithArguments,
 }
 
 /// Parses the arguments that follow the program name.
 ///
-/// `<INPUT>`, `-o <OUTPUT>`, and `--edition <EDITION>` may appear in any
-/// order. The token after `-o` is the output path verbatim, even when it
-/// starts with `-`; the token after `--edition` is its value in the same way.
+/// `<INPUT>`, `-o <OUTPUT>`, `--edition <EDITION>`, and the optional
+/// `--max-input-bytes <BYTES>` may appear in any order. The token after `-o`
+/// is the output path verbatim, even when it starts with `-`; the token after
+/// `--edition` or `--max-input-bytes` is its value in the same way.
 /// Options match only as exact tokens, so `-oFILE`, `-o=FILE`,
 /// `--edition=2024`, `-`, and `--` are unknown options. Paths need not be
 /// valid UTF-8.
@@ -90,6 +106,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
     let mut input = None;
     let mut output = None;
     let mut edition = None;
+    let mut input_limit = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if is_help(&arg) {
@@ -117,6 +134,17 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
                 return Err(UsageError::UnknownEdition(value));
             };
             edition = Some(value);
+        } else if arg == "--max-input-bytes" {
+            if input_limit.is_some() {
+                return Err(UsageError::DuplicateInputLimit);
+            }
+            let Some(value) = args.next() else {
+                return Err(UsageError::MissingInputLimitValue);
+            };
+            let Some(limit) = parse_input_limit(&value) else {
+                return Err(UsageError::InvalidInputLimit(value));
+            };
+            input_limit = Some(limit);
         } else if starts_with_dash(&arg) {
             return Err(UsageError::UnknownOption(arg));
         } else if input.is_some() {
@@ -135,7 +163,19 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, UsageError> {
         input,
         output,
         edition,
+        input_limit: input_limit.unwrap_or(SourceLimit::DEFAULT),
     }))
+}
+
+/// Returns the limit that `value` names: decimal digits only, from 1 to
+/// 4,294,967,295. Leading zeros are digits like any other.
+fn parse_input_limit(value: &OsStr) -> Option<SourceLimit> {
+    let digits = value.to_str()?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    // A value too long for `u64` is out of range as well.
+    SourceLimit::new(digits.parse().ok()?)
 }
 
 fn is_help(arg: &OsStr) -> bool {
@@ -164,6 +204,16 @@ mod tests {
             input: PathBuf::from(input),
             output: PathBuf::from(output),
             edition,
+            input_limit: SourceLimit::DEFAULT,
+        }))
+    }
+
+    fn compile_limit(bytes: u64) -> Result<Command, UsageError> {
+        Ok(Command::Compile(Invocation {
+            input: PathBuf::from("main.rs"),
+            output: PathBuf::from("main"),
+            edition: Edition::E2024,
+            input_limit: SourceLimit::new(bytes).unwrap(),
         }))
     }
 
@@ -205,6 +255,113 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn the_input_limit_is_the_default_without_the_option() {
+        let Ok(Command::Compile(invocation)) =
+            parse_strs(&["main.rs", "-o", "main", "--edition", "2024"])
+        else {
+            panic!("the command line is valid");
+        };
+        assert_eq!(invocation.input_limit(), SourceLimit::DEFAULT);
+    }
+
+    #[test]
+    fn accepts_an_input_limit_in_any_position() {
+        for (value, bytes) in [
+            ("1", 1),
+            ("134217728", 134_217_728),
+            ("4294967295", 4_294_967_295),
+            ("0042", 42),
+        ] {
+            let expected = compile_limit(bytes);
+            for args in [
+                [
+                    "--max-input-bytes",
+                    value,
+                    "main.rs",
+                    "-o",
+                    "main",
+                    "--edition",
+                    "2024",
+                ],
+                [
+                    "main.rs",
+                    "--max-input-bytes",
+                    value,
+                    "-o",
+                    "main",
+                    "--edition",
+                    "2024",
+                ],
+                [
+                    "main.rs",
+                    "-o",
+                    "main",
+                    "--edition",
+                    "2024",
+                    "--max-input-bytes",
+                    value,
+                ],
+            ] {
+                assert_eq!(parse_strs(&args), expected, "{args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_an_invalid_input_limit_and_keeps_its_value() {
+        for value in [
+            "",
+            "0",
+            "4294967296",
+            "99999999999999999999999",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1e3",
+            "0x10",
+            "128MiB",
+            "-o",
+        ] {
+            assert_eq!(
+                parse_strs(&["main.rs", "-o", "main", "--max-input-bytes", value]),
+                Err(UsageError::InvalidInputLimit(OsString::from(value))),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_input_limit_as_the_last_token() {
+        assert_eq!(
+            parse_strs(&["main.rs", "-o", "main", "--max-input-bytes"]),
+            Err(UsageError::MissingInputLimitValue)
+        );
+    }
+
+    #[test]
+    fn rejects_input_limit_twice() {
+        assert_eq!(
+            parse_strs(&[
+                "main.rs",
+                "--max-input-bytes",
+                "1",
+                "--max-input-bytes",
+                "2"
+            ]),
+            Err(UsageError::DuplicateInputLimit)
+        );
+    }
+
+    #[test]
+    fn rejects_an_attached_input_limit_value_as_an_unknown_option() {
+        assert!(matches!(
+            parse_strs(&["main.rs", "-o", "main", "--max-input-bytes=4"]),
+            Err(UsageError::UnknownOption(_))
+        ));
     }
 
     #[test]
@@ -426,6 +583,7 @@ mod tests {
                 input: PathBuf::from(input),
                 output: PathBuf::from(output),
                 edition: Edition::E2024,
+                input_limit: SourceLimit::DEFAULT,
             }))
         );
     }

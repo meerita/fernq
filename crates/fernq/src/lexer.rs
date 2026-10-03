@@ -568,7 +568,7 @@ impl<'text> Lexer<'text> {
     pub(crate) fn new(source: SourceId, text: &'text str, edition: Edition) -> Self {
         assert!(
             ByteOffset::try_from(text.len()).is_ok(),
-            "the source table admits no text longer than MAX_SOURCE_LEN bytes"
+            "the source table admits no text longer than MAX_REPRESENTABLE_SOURCE_LEN bytes"
         );
         let mut lexer = Self {
             source,

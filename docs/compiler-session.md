@@ -6,9 +6,9 @@ A compiler session is the state that one compilation holds and the inputs that r
 
 A process runs at most one compilation. Help and an invalid command line run none.
 
-The function `compile` in `crates/fernq/src/main.rs` owns the compilation. The compilation has:
+The function `compile` in the `driver` module of the `fernq` library, `crates/fernq/src/driver.rs`, owns the compilation. The `fernq` binary only calls the library entry, `fernq::run`. The compilation has:
 
-- one configuration: the `Invocation` that the command-line parser produces. It holds the input path, the output path, and the edition. It does not change after parsing.
+- one configuration: the `Invocation` that the command-line parser produces. It holds the input path, the output path, the edition, and the input size limit. It does not change after parsing.
 - one piece of mutable state: the `SourceTable` that `compile` creates and owns. It holds every source file that the compilation loads.
 
 `compile` loads the input into the `SourceTable`, lexes it to the end of the file or to the first lexical error, and reports one diagnostic. Each stage receives the values it reads as parameters. No value passes through a stage that does not use it. The session is a contract, not a type: no session or context object exists.
@@ -34,7 +34,7 @@ The command-line arguments are the only process input to a compilation. The inpu
 
 Fernq keeps no compiler state in global variables.
 
-`main` installs a panic hook once, before it parses the command line. The hook writes the internal compiler error diagnostic, then runs the previous hook. It holds no compiler state. The previous hook is the default hook of the Rust standard library, which reads `RUST_BACKTRACE`.
+`fernq::run` installs a panic hook once, before it parses the command line. The hook writes the internal compiler error diagnostic, then runs the previous hook. It holds no compiler state. The previous hook is the default hook of the Rust standard library, which reads `RUST_BACKTRACE`.
 
 ## Edition and Target
 

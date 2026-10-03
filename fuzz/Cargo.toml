@@ -1,0 +1,23 @@
+[package]
+name = "fernq-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+fernq = { path = "../crates/fernq", features = ["fuzzing"] }
+
+# The fuzz crate is development tooling outside the compiler workspace.
+[workspace]
+
+[[bin]]
+name = "lex"
+path = "fuzz_targets/lex.rs"
+test = false
+doc = false
+bench = false

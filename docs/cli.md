@@ -5,21 +5,23 @@ This page is the reference for the `fernq` command line.
 The `fernq` binary accepts this command line:
 
 ```text
-fernq <INPUT> -o <OUTPUT> --edition <EDITION>
+fernq <INPUT> -o <OUTPUT> --edition <EDITION> [--max-input-bytes <BYTES>]
 fernq -h | --help
 ```
 
 | Command line | Result | Exit status |
 |---|---|---|
 | `-h` or `--help` as the only argument | Usage on stdout. | 0 |
-| `<INPUT> -o <OUTPUT> --edition <EDITION>` | `fernq` loads and lexes the input. A diagnostic on stderr names the first failure, or states that compilation is not implemented. `fernq` writes no output. | 1 |
+| `<INPUT> -o <OUTPUT> --edition <EDITION>`, with an optional `--max-input-bytes <BYTES>` | `fernq` loads and lexes the input. A diagnostic on stderr names the first failure, or states that compilation is not implemented. `fernq` writes no output. | 1 |
 | Any other command line | A diagnostic and a usage line on stderr. | 2 |
 
 ## Arguments
 
-`<INPUT>`, `-o <OUTPUT>`, and `--edition <EDITION>` can appear in any order. The token after `-o` is the output path, even when it starts with `-`. The token after `--edition` is the edition, in the same way. Paths do not need to be valid UTF-8. Every other token that starts with `-` is an unknown option, including `-`, `--`, `-oFILE`, `-o=FILE`, and `--edition=2024`. An empty path, a repeated `-o`, a second input path, and `-h` or `--help` with other arguments are invalid.
+`<INPUT>`, `-o <OUTPUT>`, `--edition <EDITION>`, and `--max-input-bytes <BYTES>` can appear in any order. The token after `-o` is the output path, even when it starts with `-`. The token after `--edition` or `--max-input-bytes` is its value, in the same way. Paths do not need to be valid UTF-8. Every other token that starts with `-` is an unknown option, including `-`, `--`, `-oFILE`, `-o=FILE`, `--edition=2024`, and `--max-input-bytes=4`. An empty path, a repeated `-o`, a second input path, and `-h` or `--help` with other arguments are invalid.
 
 `--edition` gives the Rust edition of the input. It is required and has no default. The accepted values are exactly `2015`, `2018`, `2021`, and `2024`. A missing `--edition`, a repeated `--edition`, `--edition` as the last token, and any other value, including an empty value, are invalid.
+
+`--max-input-bytes` sets the largest input that `fernq` loads, in bytes. It is optional; without it the limit is 134,217,728 bytes (128 MiB). The value is decimal digits only, from 1 to 4,294,967,295. A repeated `--max-input-bytes`, `--max-input-bytes` as the last token, and any other value, including `0`, an empty value, a sign, and a unit such as `128MiB`, are invalid. [Input](#input) states what the limit does.
 
 `fernq` has no target option. [Compiler Session](compiler-session.md) states the rule for the edition and the target.
 
@@ -27,7 +29,11 @@ fernq -h | --help
 
 ## Input
 
-Rust requires source files to be UTF-8. `fernq` loads an input that it can open and read, that is at most 4,294,967,295 bytes (`u32::MAX`), and that is valid UTF-8. A directory, a larger file, and a file that is not valid UTF-8 cannot be loaded. An input that is not a regular file, such as a FIFO, is read until it ends or exceeds the size limit.
+Rust requires source files to be UTF-8. `fernq` loads an input that it can open and read, that is at most the input size limit, and that is valid UTF-8. A directory, a larger file, and a file that is not valid UTF-8 cannot be loaded.
+
+The input size limit is 134,217,728 bytes (128 MiB), or the value of `--max-input-bytes`, at most 4,294,967,295 bytes (`u32::MAX`), the largest text whose offsets `fernq` represents. `fernq` rejects a larger regular file from its size, before it reads it, with an `input-too-large` diagnostic. An input that is not a regular file, such as a FIFO, is read until it ends or exceeds the limit. Loading an input takes about one byte of memory per input byte, so the limit also bounds that memory.
+
+The limit is a `fernq` resource policy, not a Rust rule: Rust sets no size limit on a source file, and `rustc` 1.99.0 reads files of up to 4,294,967,294 bytes. A valid Rust file over 128 MiB needs `--max-input-bytes`. A limit above the memory available to the process lets the operating system end it before `fernq` reports a diagnostic.
 
 ## Lexing
 

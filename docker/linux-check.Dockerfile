@@ -21,6 +21,8 @@ cargo fmt --all --check; \
 cargo clippy --workspace --all-targets --locked -- -D warnings; \
 cargo build --workspace --locked; \
 cargo test --workspace --locked --no-fail-fast; \
+cargo clippy -p fernq --all-targets --locked --features fuzzing -- -D warnings; \
+cargo test -p fernq --lib --locked --features fuzzing -- fuzz::; \
 mkdir -p /tmp/tools; \
 rustfmt --edition 2024 --check tools/unicode-tables.rs; \
 clippy-driver --edition 2024 -D warnings -o /tmp/tools/unicode-tables tools/unicode-tables.rs; \
