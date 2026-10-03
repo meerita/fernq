@@ -8,8 +8,9 @@
 //! The driver does not own Rust semantics, the source model contract, the
 //! diagnostic structure, or the semantics of any compiler stage. Module
 //! `source` owns the source model. Module `edition` owns the edition. Module
-//! `lexer` owns tokens and lexical errors. Module `diagnostic` owns the
-//! diagnostic structure and its rendering.
+//! `lexer` owns tokens and lexical errors. Module `unicode` owns the Unicode
+//! character data and its version. Module `diagnostic` owns the diagnostic
+//! structure and its rendering.
 //!
 //! No workspace crate depends on the driver.
 //!
@@ -29,6 +30,7 @@ mod diagnostic;
 mod edition;
 mod lexer;
 mod source;
+mod unicode;
 
 use std::env;
 use std::io::{self, Write};
@@ -397,6 +399,8 @@ mod tests {
             "b'é'",
             "'r#self",
             "a'x'",
+            "m!(a\u{1F600});",
+            "let _ = \u{301};",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
