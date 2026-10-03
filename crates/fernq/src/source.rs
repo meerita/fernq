@@ -123,11 +123,15 @@ impl SourceTable {
         self.add(path.to_path_buf(), text)
     }
 
-    /// Returns the file with id `id`.
+    /// Returns the file with id `id`, which this table must have created.
+    ///
+    /// The table cannot detect an id from another table: when this table has
+    /// a file at the same load position, it returns that file.
     ///
     /// # Panics
     ///
-    /// Panics if `id` was created by another table.
+    /// Panics if this table has no file with id `id`, which only an id from
+    /// another table can cause.
     pub(crate) fn get(&self, id: SourceId) -> &SourceFile {
         usize::try_from(id.0)
             .ok()
