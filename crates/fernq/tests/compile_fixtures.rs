@@ -1,12 +1,18 @@
 //! Runs every compile fixture through the `fernq` binary.
 //!
 //! A fixture is one Rust source file at `tests/fixtures/<class>/<name>.rs`.
-//! The class directory names the expected outcome. The runner visits fixtures
-//! in sorted path order, collects every mismatch and convention violation,
-//! and fails once with all of them. It fails when no fixture exists.
+//! The class directory names whether the Rust compiler contract accepts the
+//! fixture. The runner visits fixtures in sorted path order, collects every
+//! mismatch and convention violation, and fails once with all of them. It
+//! fails when no fixture exists.
 //!
-//! Each fixture runs as `fernq <fixture> -o <dir>/<fixture stem>`, where
-//! `<dir>` is `CARGO_TARGET_TMPDIR/<test name>/`, cleared at start.
+//! Each fixture runs as `fernq <fixture> -o <dir>/<fixture stem> --edition
+//! 2024`, where `<dir>` is `CARGO_TARGET_TMPDIR/<test name>/`, cleared at
+//! start.
+//!
+//! A fixture may start with the line `// expected-kind: <kind>`, which names
+//! the diagnostic kind that Fernq reports today. Without it, the expected kind
+//! is `compilation-not-implemented`.
 
 use std::fs;
 use std::io;
@@ -17,15 +23,15 @@ const FIXTURE_CLASSES: &[&str] = &["compile-fail"];
 
 const TEST_NAME: &str = "every_compile_fixture_has_the_expected_outcome";
 
-const UNSUPPORTED_HEADER: &str = "error[compilation-not-implemented]:";
+const DIRECTIVE: &str = "// expected-kind:";
 
-/// Every fixture expects `unsupported`: status 1, empty stdout, a diagnostic
-/// of kind `compilation-not-implemented` on stderr, and no file at the output
-/// path.
+const DEFAULT_KIND: &str = "compilation-not-implemented";
+
+/// Every fixture expects status 1, empty stdout, a diagnostic of its expected
+/// kind on stderr, and no file at the output path.
 ///
-/// No stage rejects input yet, so the runner does not check rejection. It
-/// identifies an outcome by its diagnostic kind and compares no message
-/// wording.
+/// The runner identifies an outcome by its diagnostic kind and compares no
+/// message wording.
 #[test]
 fn every_compile_fixture_has_the_expected_outcome() {
     let output_dir = clear_test_dir(TEST_NAME);
@@ -67,6 +73,14 @@ fn every_compile_fixture_has_the_expected_outcome() {
                 continue;
             }
             fixture_count += 1;
+            let kind = match expected_kind(&fixture) {
+                Ok(kind) => kind,
+                Err(reason) => {
+                    failures.push(format!("{}: {reason}", relative(&fixture)));
+                    continue;
+                }
+            };
+            let header = format!("error[{kind}]:");
 
             let output_path = output_dir.join(
                 fixture
@@ -77,12 +91,13 @@ fn every_compile_fixture_has_the_expected_outcome() {
                 .arg(&fixture)
                 .arg("-o")
                 .arg(&output_path)
+                .args(["--edition", "2024"])
                 .output()
                 .expect("the fernq binary runs");
-            if !is_unsupported(&output, &output_path) {
+            if !has_outcome(&output, &output_path, &header) {
                 failures.push(format!(
-                    "{}: expected unsupported (exit code 1, empty stdout, \
-                     {UNSUPPORTED_HEADER} on stderr, no file at {}); \
+                    "{}: expected exit code 1, empty stdout, \
+                     {header} on stderr, no file at {}; \
                      observed exit code {:?}, output file present {}, stdout {:?}, stderr {:?}",
                     relative(&fixture),
                     output_path.display(),
@@ -106,10 +121,29 @@ fn every_compile_fixture_has_the_expected_outcome() {
     );
 }
 
-fn is_unsupported(output: &Output, output_path: &Path) -> bool {
+/// Returns the kind named by the `// expected-kind:` directive on the first
+/// line of `fixture`, or the default kind when the first line is not one.
+fn expected_kind(fixture: &Path) -> Result<String, String> {
+    let text = fs::read(fixture).map_err(|error| format!("cannot read the fixture: {error}"))?;
+    let first_line = text.split(|&byte| byte == b'\n').next().unwrap_or_default();
+    let Some(kind) = first_line.strip_prefix(DIRECTIVE.as_bytes()) else {
+        return Ok(DEFAULT_KIND.to_owned());
+    };
+    let kind = String::from_utf8_lossy(kind).trim().to_owned();
+    let is_kind_name = !kind.is_empty()
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if !is_kind_name {
+        return Err(format!("{DIRECTIVE} names no diagnostic kind: {kind:?}"));
+    }
+    Ok(kind)
+}
+
+fn has_outcome(output: &Output, output_path: &Path, header: &str) -> bool {
     output.status.code() == Some(1)
         && output.stdout.is_empty()
-        && String::from_utf8_lossy(&output.stderr).contains(UNSUPPORTED_HEADER)
+        && String::from_utf8_lossy(&output.stderr).contains(header)
         && !output_path.exists()
 }
 
