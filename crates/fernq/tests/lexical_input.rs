@@ -18,15 +18,16 @@ fn invalid_input_is_a_lexical_error_at_its_location() {
     );
 }
 
-/// `é` starts a non-ASCII identifier, which the lexer does not support. The
-/// column counts the multibyte character in the comment as one.
+/// A ZWJ inside an identifier is unsupported: the Reference forbids it and
+/// `rustc` accepts it. The column counts the multibyte character in the
+/// comment as one.
 #[test]
 fn unsupported_input_is_unsupported_syntax_at_its_location() {
     assert_rejected_at(
         "unsupported_input_is_unsupported_syntax_at_its_location",
-        "fn main() {\n    /* é */ let x = é;\n}\n",
+        "fn main() {\n    /* é */ let a\u{200D}b = 1;\n}\n",
         "unsupported-syntax",
-        "2:21",
+        "2:18",
     );
 }
 
