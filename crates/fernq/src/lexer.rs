@@ -1690,11 +1690,18 @@ mod tests {
 
     #[test]
     fn an_integer_literal_ends_where_no_digit_or_suffix_continues_it() {
-        assert_eq!(lex("1 u8"), vec![int(0, 1), ident(2, 4), end(4)]);
-        assert_eq!(
-            lex("0x1e+3"),
-            vec![int(0, 4), punct(Punctuation::Plus, 4, 5), int(5, 6), end(6)]
-        );
+        for edition in [Edition::E2015, Edition::E2024] {
+            assert_eq!(
+                lex_in("1 u8", edition),
+                vec![int(0, 1), ident(2, 4), end(4)],
+                "{edition:?}"
+            );
+            assert_eq!(
+                lex_in("0x1e+3", edition),
+                vec![int(0, 4), punct(Punctuation::Plus, 4, 5), int(5, 6), end(6)],
+                "{edition:?}"
+            );
+        }
         assert_eq!(
             lex("1-1"),
             vec![
