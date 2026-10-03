@@ -127,7 +127,11 @@ cargo build  --workspace --locked
 cargo test   --workspace --locked --no-fail-fast
 cargo fmt    --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p fernq --all-targets --locked --features fuzzing -- -D warnings
+cargo test   -p fernq --lib --locked --features fuzzing -- fuzz::
 ```
+
+The last two commands check the fuzz entry, which the Cargo feature `fuzzing` enables. Test targets build with `opt-level = 1` (`[profile.test]` in `Cargo.toml`); they keep debug assertions and overflow checks.
 
 Benchmarks are not part of the baseline checks. Run them when a change raises a performance question, with the benchmark tier that question needs ([Performance](docs/performance/README.md); see also [Performance Changes](#performance-changes)). `make bench` runs `cargo bench --workspace --locked`.
 
@@ -140,15 +144,17 @@ docker build --platform linux/arm64 -f docker/linux-check.Dockerfile -t fernq-li
 docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
 ```
 
-The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It does not build or run benchmarks. It also runs the Unicode table generator checks that `make tools` runs.
+The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It does not build or run benchmarks or fuzz sessions. It also runs the fuzz entry checks that `make fuzzing` runs and the Unicode table generator checks that `make tools` runs.
 
 The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
 
 The root `Makefile` runs the same commands. `make` with no target lists the targets. The main targets are:
 
 ```text
-make check       host checks: fmt, clippy, build, test, tools
+make check       host checks: fmt, clippy, build, test, fuzzing, tools
+make fuzzing     clippy and fuzz entry tests with the fuzzing feature
 make bench       cargo bench; not part of check
+make fuzz        one lexer fuzz session; not part of check
 make tools       format check, lint, and unit tests of the Unicode table generator
 make up          build the Linux container image
 make linux       run the checks in the Linux container
@@ -159,6 +165,32 @@ make down        remove the Linux container image
 `make scan` scans the pinned base image with Docker Scout and requires `docker login`.
 
 Additional compiler, integration, compatibility, or benchmark validation may be required depending on the change.
+
+### Fuzzing
+
+`fuzz/` holds the lexer fuzz target, a `cargo-fuzz` crate outside the workspace with its own `Cargo.lock`. Its dependencies are development tools and are not part of the compiler. It needs `cargo-fuzz` and a C++ compiler, and runs on the pinned stable toolchain without a sanitizer:
+
+```sh
+cargo install cargo-fuzz --version 0.13.2 --locked
+make fuzz                    # one session of 120 seconds
+make fuzz FUZZ_SECONDS=30    # a shorter session
+```
+
+A fuzz session lasts at most 120 seconds. `FUZZ_SECONDS` must be a whole number from 1 to 120; `make fuzz` rejects any other value before it builds. A watchdog ends the session at that wall time. For more coverage, run more sessions: each one starts from the corpus that the previous ones found.
+
+The fuzz target lexes each input in every edition and fails when a lexer invariant does not hold. Its inputs come from three directories:
+
+- `fuzz/corpus/lex/`: the inputs that sessions find. It stays on your machine and is ignored by Git.
+- `fuzz/seeds/lex/`: tracked seed inputs, small pathological and representative programs.
+- `crates/fernq/tests/fixtures/compile-fail/`: the compile fixtures.
+
+A crash writes its input to `fuzz/artifacts/lex/` and fails `make fuzz`. To fix it:
+
+1. Minimize the input: `cargo fuzz tmin -s none lex fuzz/artifacts/lex/<crash> -- -max_total_time=110`. libFuzzer checks that time only between inputs, so 110 keeps the run under 120 seconds.
+2. Add the minimized input as a named unit test in the module that owns the defect.
+3. Fix the defect, then run `make fuzz` again.
+
+`make fuzz` is not part of `make check` or the Linux container. The container has no C++ compiler, so fuzzing is validated on the host only.
 
 ### Test conventions
 
