@@ -77,6 +77,35 @@ fn a_string_program_is_not_compiled() {
     );
 }
 
+/// Lifetimes, labels, and character and byte literals lex, so the program
+/// reaches compilation.
+#[test]
+fn a_lifetime_program_is_not_compiled() {
+    let dir = clear_test_dir("a_lifetime_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        concat!(
+            "fn first<'a>(x: &'a str, _y: &'a str) -> &'a str {\n",
+            "    x\n",
+            "}\n",
+            "\n",
+            "fn main() {\n",
+            "    let _ = ('\\'', 'é', b'\\n');\n",
+            "    'outer: loop {\n",
+            "        break 'outer;\n",
+            "    }\n",
+            "}\n",
+        ),
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
 #[test]
 fn missing_input_is_not_found() {
     let dir = clear_test_dir("missing_input_is_not_found");

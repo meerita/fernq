@@ -184,8 +184,9 @@ fn invalid_message(reason: Invalid) -> String {
     match reason {
         Invalid::Character(c) => format!("{} cannot start a token", describe(c)),
         Invalid::UnterminatedBlockComment => "block comment is not terminated".to_owned(),
-        Invalid::ReservedPrefix => "an identifier directly followed by '#' or '\"' \
-            that does not start a literal is a reserved prefix since edition 2021"
+        Invalid::ReservedPrefix => "an identifier directly followed by '#' or a quote, or a \
+            lifetime directly followed by '#', is a reserved prefix since edition 2021 unless \
+            it starts a literal or a raw lifetime"
             .to_owned(),
         Invalid::ReservedPounds => {
             "two or more '#' in a row are reserved since edition 2024".to_owned()
@@ -206,19 +207,31 @@ fn invalid_message(reason: Invalid) -> String {
         Invalid::TooManyRawPounds => {
             "a raw literal is delimited by at most 255 '#' on each side".to_owned()
         }
+        Invalid::ReservedRawLifetime => {
+            "'_', 'crate', 'self', 'Self', and 'super' cannot be raw lifetimes".to_owned()
+        }
         Invalid::MalformedRawPrefix => {
-            "raw prefix starts neither a raw identifier nor a raw literal".to_owned()
+            "raw prefix starts no raw identifier, raw lifetime, or raw literal".to_owned()
         }
         Invalid::UnterminatedLiteral => "literal is not terminated".to_owned(),
         Invalid::BareCarriageReturn => {
             "carriage return in a literal is not followed by a line feed".to_owned()
         }
         Invalid::NonAsciiInByteLiteral => {
-            "byte string literals can contain only ASCII characters".to_owned()
+            "byte and byte string literals can contain only ASCII characters".to_owned()
         }
         Invalid::NulInCString => "C string literals cannot contain a NUL character".to_owned(),
         Invalid::Escape(reason) => escape_message(reason).to_owned(),
         Invalid::UnderscoreSuffix => "literal suffix cannot be '_' alone".to_owned(),
+        Invalid::EmptyCharLiteral => "character literal is empty".to_owned(),
+        Invalid::UnescapedCharacter => {
+            "a quote, line feed, carriage return, or tab in a character literal must be escaped"
+                .to_owned()
+        }
+        Invalid::UnclosedCharLiteral => {
+            "character literal is not closed after one character".to_owned()
+        }
+        Invalid::CharLiteralTooLong => "character literal has more than one character".to_owned(),
     }
 }
 
@@ -235,7 +248,9 @@ fn escape_message(reason: InvalidEscape) -> &'static str {
         InvalidEscape::UnicodeOverlong => "'\\u{...}' escape has more than six hexadecimal digits",
         InvalidEscape::UnicodeUnclosed => "'\\u{...}' escape is not closed by '}'",
         InvalidEscape::UnicodeNotScalar => "'\\u{...}' escape is not a Unicode scalar value",
-        InvalidEscape::UnicodeInByteLiteral => "byte string literals cannot contain '\\u' escapes",
+        InvalidEscape::UnicodeInByteLiteral => {
+            "byte and byte string literals cannot contain '\\u' escapes"
+        }
     }
 }
 
@@ -341,7 +356,7 @@ mod tests {
         let len = ByteOffset::try_from(13_usize).unwrap();
         kinds.push(not_implemented(input, len, Path::new("main")).kind);
         kinds.push(lex_failure(lex_error("`")).kind);
-        kinds.push(lex_failure(lex_error("'")).kind);
+        kinds.push(lex_failure(lex_error("é")).kind);
 
         for (index, kind) in kinds.iter().enumerate() {
             assert!(
@@ -378,6 +393,10 @@ mod tests {
             "r#self",
             "a\"x\"",
             "\"a\rb\"",
+            "'ab'",
+            "b'é'",
+            "'r#self",
+            "a'x'",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
@@ -393,6 +412,7 @@ mod tests {
             "fn café() {}",
             "r#é",
             "1e3é",
+            "'é",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(
