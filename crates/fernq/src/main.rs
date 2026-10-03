@@ -18,26 +18,8 @@
 //! owns the session contract, including global state, process input, and the
 //! edition and target.
 //!
-//! The command line is experimental and carries no compatibility promise. It
-//! accepts `fernq <INPUT> -o <OUTPUT>` and `fernq -h` or `fernq --help`:
-//!
-//! - Help prints usage on stdout and exits with status 0.
-//! - A valid invocation loads the input into the source model. An input that
-//!   cannot be opened or read, is a directory, is longer than `u32::MAX`
-//!   bytes, or is not UTF-8 is reported with status 1. A non-UTF-8 input is
-//!   reported with the line and column of its first invalid byte. A loaded
-//!   input is reported as not compiled, because compilation is not
-//!   implemented, with status 1. The driver writes no output.
-//! - Any other command line is invalid. The driver reports it, then the usage
-//!   line, and exits with status 2.
-//!
-//! Every failure is reported on stderr as one rendered diagnostic, whose kind
-//! identifies the failure. Kinds, format, and messages are experimental.
-//!
-//! An uncaught panic is an internal compiler error. Under the current
-//! bootstrap and runtime configuration, it exits with status 101. The driver
-//! reports it as a diagnostic of kind `internal-compiler-error`, followed by
-//! the default panic output.
+//! `docs/cli.md` owns the command-line reference: accepted command lines,
+//! input loading, diagnostics, exit statuses, and panic reporting.
 
 mod cli;
 mod diagnostic;
