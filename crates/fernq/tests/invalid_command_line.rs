@@ -1,5 +1,5 @@
 //! An invalid command line exits with status 2, writes nothing to stdout, and
-//! reports the error on stderr.
+//! reports a diagnostic of kind `invalid-command-line` on stderr.
 
 use std::process::Command;
 
@@ -13,6 +13,8 @@ const CASES: &[(&str, &[&str])] = &[
     ("help with other arguments", &["-h", "main.rs"]),
 ];
 
+const HEADER: &str = "error[invalid-command-line]:";
+
 #[test]
 fn every_invalid_command_line_exits_with_status_2() {
     let mut failures = Vec::new();
@@ -24,10 +26,10 @@ fn every_invalid_command_line_exits_with_status_2() {
 
         if !(output.status.code() == Some(2)
             && output.stdout.is_empty()
-            && !output.stderr.is_empty())
+            && String::from_utf8_lossy(&output.stderr).contains(HEADER))
         {
             failures.push(format!(
-                "{case} {args:?}: expected status 2, empty stdout, non-empty stderr; \
+                "{case} {args:?}: expected status 2, empty stdout, {HEADER} on stderr; \
                  observed exit code {:?}, stdout {:?}, stderr {:?}",
                 output.status.code(),
                 String::from_utf8_lossy(&output.stdout),

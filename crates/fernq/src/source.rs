@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::num::TryFromIntError;
 use std::path::{Path, PathBuf};
+use std::string::FromUtf8Error;
 
 /// The maximum length of one source file, in bytes.
 pub(crate) const MAX_SOURCE_LEN: u32 = u32::MAX;
@@ -123,11 +124,8 @@ pub(crate) enum LoadError {
     TooLarge {
         limit: u32,
     },
-    /// The text is not UTF-8; `offset` is the first byte of the first invalid
-    /// sequence.
-    NotUtf8 {
-        offset: ByteOffset,
-    },
+    /// The text is not UTF-8.
+    NotUtf8(InvalidUtf8),
     /// The table already holds a file for every possible [`SourceId`].
     TooManyFiles,
 }
@@ -142,19 +140,35 @@ impl LoadError {
     }
 }
 
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound => f.write_str("no such file"),
-            Self::PermissionDenied => f.write_str("permission denied"),
-            Self::Directory => f.write_str("is a directory"),
-            Self::Io(error) => error.fmt(f),
-            Self::TooLarge { limit } => write!(f, "the file is larger than {limit} bytes"),
-            Self::NotUtf8 { offset } => {
-                write!(f, "the file is not valid UTF-8 at byte offset {offset}")
-            }
-            Self::TooManyFiles => f.write_str("too many source files"),
-        }
+/// Text that is not UTF-8, kept up to the first byte of its first invalid
+/// sequence.
+#[derive(Debug)]
+pub(crate) struct InvalidUtf8 {
+    valid: String,
+    offset: ByteOffset,
+}
+
+impl InvalidUtf8 {
+    /// Keeps the text of `error` before its first invalid sequence, or returns
+    /// `None` when that text is too long for a [`ByteOffset`].
+    pub(crate) fn new(error: FromUtf8Error) -> Option<Self> {
+        let valid_len = error.utf8_error().valid_up_to();
+        let mut bytes = error.into_bytes();
+        bytes.truncate(valid_len);
+        let valid = String::from_utf8(bytes)
+            .expect("the bytes before the first invalid sequence are valid UTF-8");
+        let offset = ByteOffset::try_from(valid.len()).ok()?;
+        Some(Self { valid, offset })
+    }
+
+    /// The offset of the first byte of the first invalid sequence.
+    pub(crate) fn offset(&self) -> ByteOffset {
+        self.offset
+    }
+
+    /// The text before [`offset`](Self::offset).
+    pub(crate) fn into_valid(self) -> String {
+        self.valid
     }
 }
 
@@ -199,10 +213,7 @@ fn read_text(reader: impl Read, limit: u32, capacity: usize) -> Result<String, L
     let len = u64::try_from(bytes.len()).map_err(|_| LoadError::TooLarge { limit })?;
     check_len(len, limit)?;
     String::from_utf8(bytes).map_err(|error| {
-        match ByteOffset::try_from(error.utf8_error().valid_up_to()) {
-            Ok(offset) => LoadError::NotUtf8 { offset },
-            Err(_) => LoadError::TooLarge { limit },
-        }
+        InvalidUtf8::new(error).map_or(LoadError::TooLarge { limit }, LoadError::NotUtf8)
     })
 }
 
@@ -227,29 +238,21 @@ mod tests {
     #[test]
     fn reports_invalid_utf8_at_offset_zero() {
         let result = read(b"\xff\xfe", 16);
-        assert!(
-            matches!(
-                result,
-                Err(LoadError::NotUtf8 {
-                    offset: ByteOffset(0)
-                })
-            ),
-            "{result:?}"
-        );
+        let Err(LoadError::NotUtf8(invalid)) = result else {
+            panic!("{result:?}");
+        };
+        assert_eq!(invalid.offset(), ByteOffset(0));
+        assert_eq!(invalid.into_valid(), "");
     }
 
     #[test]
     fn reports_the_offset_of_the_first_invalid_byte() {
         let result = read(b"fn main() {}\n// \xff\xff", 32);
-        assert!(
-            matches!(
-                result,
-                Err(LoadError::NotUtf8 {
-                    offset: ByteOffset(16)
-                })
-            ),
-            "{result:?}"
-        );
+        let Err(LoadError::NotUtf8(invalid)) = result else {
+            panic!("{result:?}");
+        };
+        assert_eq!(invalid.offset(), ByteOffset(16));
+        assert_eq!(invalid.into_valid(), "fn main() {}\n// ");
     }
 
     #[test]

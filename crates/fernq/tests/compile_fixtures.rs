@@ -17,11 +17,15 @@ const FIXTURE_CLASSES: &[&str] = &["compile-fail"];
 
 const TEST_NAME: &str = "every_compile_fixture_has_the_expected_outcome";
 
-/// Every fixture expects `unsupported`: status 1, empty stdout, and no file at
-/// the output path.
+const UNSUPPORTED_HEADER: &str = "error[compilation-not-implemented]:";
+
+/// Every fixture expects `unsupported`: status 1, empty stdout, a diagnostic
+/// of kind `compilation-not-implemented` on stderr, and no file at the output
+/// path.
 ///
-/// The runner identifies `unsupported` by status because no stage rejects
-/// input yet. It does not check rejection, and it does not compare stderr.
+/// No stage rejects input yet, so the runner does not check rejection. It
+/// identifies an outcome by its diagnostic kind and compares no message
+/// wording.
 #[test]
 fn every_compile_fixture_has_the_expected_outcome() {
     let output_dir = clear_test_dir(TEST_NAME);
@@ -77,7 +81,8 @@ fn every_compile_fixture_has_the_expected_outcome() {
                 .expect("the fernq binary runs");
             if !is_unsupported(&output, &output_path) {
                 failures.push(format!(
-                    "{}: expected unsupported (exit code 1, empty stdout, no file at {}); \
+                    "{}: expected unsupported (exit code 1, empty stdout, \
+                     {UNSUPPORTED_HEADER} on stderr, no file at {}); \
                      observed exit code {:?}, output file present {}, stdout {:?}, stderr {:?}",
                     relative(&fixture),
                     output_path.display(),
@@ -102,7 +107,10 @@ fn every_compile_fixture_has_the_expected_outcome() {
 }
 
 fn is_unsupported(output: &Output, output_path: &Path) -> bool {
-    output.status.code() == Some(1) && output.stdout.is_empty() && !output_path.exists()
+    output.status.code() == Some(1)
+        && output.stdout.is_empty()
+        && String::from_utf8_lossy(&output.stderr).contains(UNSUPPORTED_HEADER)
+        && !output_path.exists()
 }
 
 /// Returns an empty `CARGO_TARGET_TMPDIR/<test_name>/` directory.

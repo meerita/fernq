@@ -5,7 +5,6 @@
 //! returns. Writing output and choosing the exit status belong to `main`.
 
 use std::ffi::{OsStr, OsString};
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The synopsis of a valid invocation.
@@ -56,27 +55,6 @@ pub(crate) enum UsageError {
     MissingOutput,
     /// `-h` or `--help` together with other arguments.
     HelpWithArguments,
-}
-
-impl fmt::Display for UsageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoArguments => f.write_str("no arguments"),
-            Self::UnknownOption(token) => write!(f, "unknown option '{}'", token.display()),
-            Self::MissingOutputValue => f.write_str("option -o requires an output path"),
-            Self::DuplicateOutput => f.write_str("option -o is given more than once"),
-            Self::EmptyOutput => f.write_str("the output path is empty"),
-            Self::EmptyInput => f.write_str("the input path is empty"),
-            Self::ExtraInput(token) => write!(
-                f,
-                "unexpected argument '{}'; only one input path is accepted",
-                token.display()
-            ),
-            Self::MissingInput => f.write_str("missing input path"),
-            Self::MissingOutput => f.write_str("missing output path; pass -o <OUTPUT>"),
-            Self::HelpWithArguments => f.write_str("-h and --help take no other arguments"),
-        }
-    }
 }
 
 /// Parses the arguments that follow the program name.
