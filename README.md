@@ -121,13 +121,13 @@ rustup toolchain install
 cargo build --workspace --locked
 ```
 
-Run the compiler with an input file and an output path:
+Run the compiler with an input file, an output path, and the Rust edition of the input:
 
 ```text
-fernq <INPUT> -o <OUTPUT>
+fernq <INPUT> -o <OUTPUT> --edition <EDITION>
 ```
 
-Compilation is not implemented. `fernq` loads the input, reports one diagnostic on stderr, exits with status 1, and writes no output. [docs/cli.md](docs/cli.md) is the command-line reference.
+Compilation is not implemented. `fernq` loads and lexes the input, reports one diagnostic on stderr, exits with status 1, and writes no output. [docs/cli.md](docs/cli.md) is the command-line reference.
 
 Builds are validated on macOS aarch64, and on Linux aarch64 in the Debian-based container that [CONTRIBUTING.md](CONTRIBUTING.md) describes. Other hosts, including Linux x86_64, are not validated.
 
@@ -135,7 +135,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the test, format, lint, and benchmark
 
 ## Documentation
 
-- [Command Line](docs/cli.md): arguments, input loading, diagnostics, and exit statuses.
+- [Command Line](docs/cli.md): arguments, input loading, lexing, diagnostics, and exit statuses.
 - [Compiler Session](docs/compiler-session.md): the state and inputs of one compilation.
 
 ## Contributing

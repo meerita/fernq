@@ -174,11 +174,11 @@ Compile fixtures:
 
 - A compile fixture is one Rust source file per case at `crates/fernq/tests/fixtures/<class>/<name>.rs`. The class directory names the expected result. The file name describes the case.
 - Do not put a file directly in `tests/fixtures/`. Cargo builds `tests/<dir>/main.rs` as a test target.
-- Fixtures have no directives.
+- A fixture can start with the line `// expected-kind: <kind>`, which names the diagnostic kind that the fixture expects. Fixtures have no other directives.
 - The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code. A new class directory needs an entry in the runner's class list.
-- The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, and a non-`.rs` file in a class directory.
+- The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, a non-`.rs` file in a class directory, and an `// expected-kind:` line that names no kind.
 
-The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. Compilation is not implemented, so every fixture currently expects the valid-invocation outcome that [docs/cli.md](docs/cli.md) describes: exit status 1, empty stdout, a diagnostic of kind `compilation-not-implemented` on stderr, and no file at the output path. The runner identifies the outcome by the diagnostic kind, so a load failure does not pass as the not-implemented outcome. The runner does not compare message wording. No compiler stage rejects source yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
+The only fixture class is `compile-fail`: source that Rust rejects. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem> --edition 2024`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. Every fixture expects exit status 1, empty stdout, a diagnostic of its expected kind on stderr, and no file at the output path. The expected kind is the kind in the `// expected-kind:` line, or `compilation-not-implemented` when the fixture has no such line. A fixture that a current stage rejects names that kind, for example `lexical-error`. A fixture whose rejection belongs to a stage that does not exist yet expects `compilation-not-implemented`, which [docs/cli.md](docs/cli.md) describes. The runner identifies the outcome by the diagnostic kind, so a load failure does not pass as another outcome. The runner does not compare message wording.
 
 Temporary output:
 

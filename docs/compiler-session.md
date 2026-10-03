@@ -8,10 +8,10 @@ A process runs at most one compilation. Help and an invalid command line run non
 
 The function `compile` in `crates/fernq/src/main.rs` owns the compilation. The compilation has:
 
-- one configuration: the `Invocation` that the command-line parser produces. It does not change after parsing.
+- one configuration: the `Invocation` that the command-line parser produces. It holds the input path, the output path, and the edition. It does not change after parsing.
 - one piece of mutable state: the `SourceTable` that `compile` creates and owns. It holds every source file that the compilation loads.
 
-Each stage receives the values it reads as parameters. No value passes through a stage that does not use it. The session is a contract, not a type: no session or context object exists.
+`compile` loads the input into the `SourceTable`, lexes it to the end of the file or to the first lexical error, and reports one diagnostic. Each stage receives the values it reads as parameters. No value passes through a stage that does not use it. The session is a contract, not a type: no session or context object exists.
 
 ```mermaid
 flowchart LR
@@ -19,13 +19,13 @@ flowchart LR
     inv["Invocation"]
     compile["compile"]
     table["SourceTable"]
-    stages["stages"]
+    lexer["lexer"]
 
     args -- "parse" --> inv
     inv -- "&Invocation" --> compile
-    compile -- "creates" --> table
-    compile -- "parameters" --> stages
-    table -- "&SourceFile" --> stages
+    compile -- "creates, loads" --> table
+    table -- "SourceId, &SourceFile" --> compile
+    compile -- "SourceId, text, Edition" --> lexer
 ```
 
 ## Process Input and Global State
@@ -38,12 +38,13 @@ Fernq keeps no compiler state in global variables.
 
 ## Edition and Target
 
-No stage takes an edition or a target, and no current outcome depends on either. The command line has no edition or target option: `--edition` and `--target` are unknown options.
+The edition is configuration. The `Invocation` holds it, and the command line requires it: [Command Line](cli.md) states the accepted values. The lexer is the only stage that reads the edition. `compile` passes it to the lexer as a parameter.
+
+No stage takes a target, and no current outcome depends on one. The command line has no target option: `--target` is an unknown option.
 
 A stage that depends on the edition or the target receives it as an explicit parameter, from configuration that the driver parses. It does not take the edition or the target from the host, the environment, or the source text.
 
 ## Limits
 
-- Edition input, its default, and its accepted values are not defined. They belong to the first stage whose result depends on the edition.
 - Target input is not defined. It belongs to target support.
 - Configuration and mutable state are not split further. A split belongs to the first stage that needs a second piece of mutable state.
