@@ -12,19 +12,11 @@
 //!
 //! No workspace crate depends on the driver.
 //!
-//! A process runs at most one compilation, and `compile` owns it. Its
-//! configuration is the parsed `Invocation`, which does not change after
-//! parsing. Its only mutable state is the `SourceTable` that `compile` creates
-//! and owns. Each stage receives the values it reads as parameters, and no
-//! value passes through a stage that does not use it. Fernq keeps no compiler
-//! state in global variables. Compilation reads no environment variable: the
-//! command-line arguments are its only process input. The panic hook that
-//! `main` installs once is process presentation and holds no compiler state.
-//!
-//! No stage takes an edition or a target, and no current outcome depends on
-//! either. A stage that depends on the edition or the target receives it as an
-//! explicit parameter from configuration that the driver parses, never from
-//! the host, the environment, or the source text.
+//! `compile` owns the one compilation of a process. Its configuration is the
+//! parsed `Invocation`, and its only mutable state is the `SourceTable`. Each
+//! stage receives the values it reads as parameters. `docs/compiler-session.md`
+//! owns the session contract, including global state, process input, and the
+//! edition and target.
 //!
 //! The command line is experimental and carries no compatibility promise. It
 //! accepts `fernq <INPUT> -o <OUTPUT>` and `fernq -h` or `fernq --help`:
