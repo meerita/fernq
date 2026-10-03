@@ -121,7 +121,24 @@ rustup toolchain install
 cargo build --workspace --locked
 ```
 
-The `fernq` binary is a placeholder. It writes `fernq: no compiler functionality is implemented` to stderr and exits with a failure status. It does not read its arguments. This output and exit status are not a stable interface.
+The `fernq` binary accepts this command line:
+
+```text
+fernq <INPUT> -o <OUTPUT>
+fernq -h | --help
+```
+
+| Command line | Result | Exit status |
+|---|---|---|
+| `-h` or `--help` as the only argument | Usage on stdout. | 0 |
+| `<INPUT> -o <OUTPUT>` | A line on stderr states that compilation is not implemented. `fernq` opens no file and writes no output. | 1 |
+| Any other command line | An error and a usage line on stderr. | 2 |
+
+`<INPUT>` and `-o <OUTPUT>` can appear in either order. The token after `-o` is the output path, even when it starts with `-`. Paths do not need to be valid UTF-8. Every other token that starts with `-` is an unknown option, including `-`, `--`, `-oFILE`, and `-o=FILE`. An empty path, a repeated `-o`, a second input path, and `-h` or `--help` with other arguments are invalid.
+
+Help exits with status 1 when stdout reports a write error, for example a closed pipe. When the process starts with stdout closed, the Rust standard library discards the help text without an error, and help exits with status 0.
+
+The command line is experimental. Options, exit statuses, and messages can change without notice. The command line is not compatible with `rustc`, so Cargo cannot run `fernq` as its compiler.
 
 Builds are validated on macOS aarch64, and on Linux aarch64 in the Debian-based container that [CONTRIBUTING.md](CONTRIBUTING.md) describes. Other hosts, including Linux x86_64, are not validated.
 

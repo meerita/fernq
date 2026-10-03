@@ -178,7 +178,7 @@ Compile fixtures:
 - The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code. A new class directory needs an entry in the runner's class list.
 - The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, and a non-`.rs` file in a class directory.
 
-The only fixture class is `compile-fail`. The driver does not read its input, so every fixture currently expects the placeholder outcome: a failure status, empty stdout, and the line `fernq: no compiler functionality is implemented` on stderr. The runner does not check that the driver rejects a `compile-fail` fixture.
+The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. The driver does not read its input, so every fixture currently expects the valid-invocation outcome that [README.md](README.md#building) describes: exit status 1, empty stdout, and no file at the output path. The runner does not compare stderr. No stage rejects input yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
 
 Temporary output:
 
