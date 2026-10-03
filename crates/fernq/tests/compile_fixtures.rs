@@ -4,6 +4,9 @@
 //! The class directory names the expected outcome. The runner visits fixtures
 //! in sorted path order, collects every mismatch and convention violation,
 //! and fails once with all of them. It fails when no fixture exists.
+//!
+//! Each fixture runs as `fernq <fixture> -o <dir>/<fixture stem>`, where
+//! `<dir>` is `CARGO_TARGET_TMPDIR/<test name>/`, cleared at start.
 
 use std::fs;
 use std::io;
@@ -12,14 +15,16 @@ use std::process::{Command, Output};
 
 const FIXTURE_CLASSES: &[&str] = &["compile-fail"];
 
-/// The stderr of the `unsupported` outcome.
-///
-/// Every fixture expects `unsupported` because the driver does not read its
-/// input. A class expectation such as rejection is not checked.
-const UNSUPPORTED_STDERR: &str = "fernq: no compiler functionality is implemented\n";
+const TEST_NAME: &str = "every_compile_fixture_has_the_expected_outcome";
 
+/// Every fixture expects `unsupported`: status 1, empty stdout, and no file at
+/// the output path.
+///
+/// The runner identifies `unsupported` by status because no stage rejects
+/// input yet. It does not check rejection, and it does not compare stderr.
 #[test]
 fn every_compile_fixture_has_the_expected_outcome() {
+    let output_dir = clear_test_dir(TEST_NAME);
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let relative = |path: &Path| {
         path.strip_prefix(manifest_dir)
@@ -59,16 +64,25 @@ fn every_compile_fixture_has_the_expected_outcome() {
             }
             fixture_count += 1;
 
+            let output_path = output_dir.join(
+                fixture
+                    .file_stem()
+                    .expect("a `.rs` fixture path has a file stem"),
+            );
             let output = Command::new(env!("CARGO_BIN_EXE_fernq"))
                 .arg(&fixture)
+                .arg("-o")
+                .arg(&output_path)
                 .output()
                 .expect("the fernq binary runs");
-            if !is_unsupported(&output) {
+            if !is_unsupported(&output, &output_path) {
                 failures.push(format!(
-                    "{}: expected unsupported (failure status, empty stdout, stderr {UNSUPPORTED_STDERR:?}); \
-                     observed exit code {:?}, stdout {:?}, stderr {:?}",
+                    "{}: expected unsupported (exit code 1, empty stdout, no file at {}); \
+                     observed exit code {:?}, output file present {}, stdout {:?}, stderr {:?}",
                     relative(&fixture),
+                    output_path.display(),
                     output.status.code(),
+                    output_path.exists(),
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr),
                 ));
@@ -87,10 +101,21 @@ fn every_compile_fixture_has_the_expected_outcome() {
     );
 }
 
-fn is_unsupported(output: &Output) -> bool {
-    !output.status.success()
-        && output.stdout.is_empty()
-        && output.stderr == UNSUPPORTED_STDERR.as_bytes()
+fn is_unsupported(output: &Output, output_path: &Path) -> bool {
+    output.status.code() == Some(1) && output.stdout.is_empty() && !output_path.exists()
+}
+
+/// Returns an empty `CARGO_TARGET_TMPDIR/<test_name>/` directory.
+fn clear_test_dir(test_name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(test_name);
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => panic!("cannot clear {}: {error}", dir.display()),
+    }
+    fs::create_dir_all(&dir)
+        .unwrap_or_else(|error| panic!("cannot create {}: {error}", dir.display()));
+    dir
 }
 
 /// Returns the entries of `dir` in sorted path order, or no entries when
