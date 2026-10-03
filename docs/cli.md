@@ -37,20 +37,34 @@ The supported lexical surface is:
 
 - identifiers of ASCII letters, ASCII digits, and `_` that do not start with a digit;
 - the strict and reserved keywords of the Rust Reference for Rust 1.99.0, by edition: `async`, `await`, `dyn`, and `try` are keywords from edition 2018, and `gen` from edition 2024; in earlier editions they are identifiers; weak keywords such as `union` and `macro_rules` are identifiers;
+- integer literals in decimal, binary (`0b`), octal (`0o`), and hexadecimal (`0x`), with `_` separators and an optional suffix of ASCII letters, digits, and `_`, such as `98_222`, `0xff`, `0b1111_0000`, and `1u8`. Lexing does not check the suffix or the value: `1suffix` and `340282366920938463463374607431768211456` lex;
+- the punctuation of the Rust Reference other than delimiters: `+` `-` `*` `/` `%` `^` `!` `&` `|` `&&` `||` `<<` `>>` `+=` `-=` `*=` `/=` `%=` `^=` `&=` `|=` `<<=` `>>=` `=` `==` `!=` `>` `<` `>=` `<=` `@` `.` `..` `...` `..=` `,` `;` `:` `::` `->` `=>` `<-` `#` `$` `?` `~`. Adjacent punctuation forms the longest token first: `&&&` is `&&` then `&`, and `x<-1` contains `<-`. Whitespace and comments separate tokens: `< <` is two tokens;
 - the delimiters `(`, `)`, `[`, `]`, `{`, and `}`; lexing does not check that delimiters pair, so `fn main( {}` lexes;
 - whitespace: U+0009 to U+000D, U+0020, U+0085, U+200E, U+200F, U+2028, and U+2029;
 - line comments and nested block comments that are not doc comments;
 - a byte order mark at the start of the file;
-- a shebang line at the start of the file or after the byte order mark. As Rust requires, `#!` followed by `[`, after whitespace and non-doc comments, starts an inner attribute, not a shebang.
+- a shebang line at the start of the file or after the byte order mark. As Rust requires, `#!` followed by `[`, after whitespace and non-doc comments, starts an inner attribute, not a shebang. After the start of the file, `#!` is the punctuation `#` and `!`.
+
+After the digits of an integer literal without a suffix, `.` followed by `.`, `_`, or an ASCII letter is the next token: `1..2` is `1`, `..`, `2`, and `1.foo` is `1`, `.`, `foo`. Any other `.` makes a decimal literal a floating-point literal, as does an exponent such as `e3`. After binary, octal, or hexadecimal digits, it is a lexical error. After a suffix, `.` is always the next token: `1u8.0` is `1u8`, `.`, `0`.
+
+The edition changes how `#` lexes:
+
+| Input | Editions 2015 and 2018 | Edition 2021 | Edition 2024 |
+|---|---|---|---|
+| An identifier or keyword directly followed by `#`, such as `a#b` | identifier, `#`, identifier | `lexical-error`: reserved prefix | `lexical-error`: reserved prefix |
+| `r#` or `br#` | `unsupported-syntax` | `unsupported-syntax` | `unsupported-syntax` |
+| `cr#` | identifier, `#` | `unsupported-syntax` | `unsupported-syntax` |
+| Two or more `#` in a row, such as `##` | one `#` each | one `#` each | `lexical-error`: reserved |
+| `#` directly followed by `"` | `#`, then `unsupported-syntax` at `"` | `#`, then `unsupported-syntax` at `"` | `lexical-error`: reserved |
 
 Input outside this surface gets one of two diagnostic kinds:
 
 | Kind | Input | Location |
 |---|---|---|
-| `lexical-error` | No Rust token can start here: a backtick, a backslash, U+0000 to U+0008, U+000E to U+001F, U+007F, or a block comment that is not a doc comment and has no closing `*/`. The input is not valid Rust. | The character, or the outermost `/*` of the unterminated comment. |
-| `unsupported-syntax` | Any other input: literals, punctuation other than delimiters, raw identifiers, lifetimes, attributes, doc comments, and non-ASCII characters other than whitespace. The input can be valid Rust. | The first character, or the start of the doc comment. |
+| `lexical-error` | The input is not valid Rust: a backtick, a backslash, U+0000 to U+0008, U+000E to U+001F, U+007F; a block comment that is not a doc comment and has no closing `*/`; a binary or octal digit outside the radix (`0b0102`); a radix prefix with no digit (`0b_`, `0xG`); a binary or octal literal followed by `e` or `E` (`0b101e`); a binary, octal, or hexadecimal literal followed by a `.` that starts no other token (`0x80.0`); an exponent with no digit (`2e`, `2em`); the reserved `#` forms in the table above. | The character, the outermost `/*` of the unterminated comment, or the start of the literal or of the reserved form. |
+| `unsupported-syntax` | Any other input. The input can be valid Rust. This includes floating-point literals, string, byte string, and character literals, raw identifiers and raw strings, lifetimes, doc comments, and non-ASCII characters other than whitespace. | The first unsupported character, the start of the doc comment, the start of the floating-point literal, or the start of the raw prefix. |
 
-A non-ASCII identifier is unsupported. `fernq` does not report a non-ASCII character as a lexical error, because it does not yet distinguish identifier characters from characters that no Rust token can start.
+Non-ASCII identifiers and suffixes are unsupported. `fernq` does not report a non-ASCII character as a lexical error, because it does not yet distinguish identifier characters from characters that no Rust token can start. For the same reason, an identifier, keyword, or integer literal directly followed by a non-ASCII character other than whitespace is unsupported at that character. The same applies to an integer literal followed by `.` and such a character. `café`, `1é`, `1.é`, and `0x1.é` report `unsupported-syntax` at `é`. An identifier directly followed by `"` or `'`, such as `b"x"`, is unsupported at the quote.
 
 ## Diagnostics
 
