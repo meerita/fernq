@@ -34,6 +34,78 @@ fn an_arithmetic_program_is_not_compiled() {
     );
 }
 
+/// Float literals lex, with or without a fractional part, exponent, or
+/// suffix, so the program reaches compilation.
+#[test]
+fn a_float_program_is_not_compiled() {
+    let dir = clear_test_dir("a_float_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        "fn main() {\n    let x = 1.5e3_f64;\n    let y = 2.;\n}\n",
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
+/// String, raw string, byte string, and C string literals and raw
+/// identifiers lex, so the program reaches compilation.
+#[test]
+fn a_string_program_is_not_compiled() {
+    let dir = clear_test_dir("a_string_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        concat!(
+            "fn main() {\n",
+            "    let r#fn = \"a\\n\\u{e9}\";\n",
+            "    let _ = r#\"say \"hi\"\"#;\n",
+            "    let _ = b\"\\x00\";\n",
+            "    let _ = c\"C\";\n",
+            "}\n",
+        ),
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
+/// Lifetimes, labels, and character and byte literals lex, so the program
+/// reaches compilation.
+#[test]
+fn a_lifetime_program_is_not_compiled() {
+    let dir = clear_test_dir("a_lifetime_program_is_not_compiled");
+    let input = dir.join("main.rs");
+    fs::write(
+        &input,
+        concat!(
+            "fn first<'a>(x: &'a str, _y: &'a str) -> &'a str {\n",
+            "    x\n",
+            "}\n",
+            "\n",
+            "fn main() {\n",
+            "    let _ = ('\\'', 'é', b'\\n');\n",
+            "    'outer: loop {\n",
+            "        break 'outer;\n",
+            "    }\n",
+            "}\n",
+        ),
+    )
+    .expect("the input file is written");
+    assert_not_compiled(
+        input.as_os_str(),
+        &dir.join("main"),
+        "compilation-not-implemented",
+    );
+}
+
 #[test]
 fn missing_input_is_not_found() {
     let dir = clear_test_dir("missing_input_is_not_found");

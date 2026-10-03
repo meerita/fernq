@@ -39,7 +39,7 @@ use std::process::ExitCode;
 use cli::{Command, Invocation, USAGE, UsageError};
 use diagnostic::{Diagnostic, DiagnosticKind, Location};
 use edition::Edition;
-use lexer::{Invalid, LexError, LexErrorKind, Lexer, TokenKind, Unsupported};
+use lexer::{Invalid, InvalidEscape, LexError, LexErrorKind, Lexer, TokenKind, Unsupported};
 use source::{ByteOffset, LoadError, SourceId, SourceTable};
 
 const HELP: &str = "\
@@ -184,10 +184,10 @@ fn invalid_message(reason: Invalid) -> String {
     match reason {
         Invalid::Character(c) => format!("{} cannot start a token", describe(c)),
         Invalid::UnterminatedBlockComment => "block comment is not terminated".to_owned(),
-        Invalid::ReservedPrefix => {
-            "an identifier directly followed by '#' is a reserved prefix since edition 2021"
-                .to_owned()
-        }
+        Invalid::ReservedPrefix => "an identifier directly followed by '#' or a quote, or a \
+            lifetime directly followed by '#', is a reserved prefix since edition 2021 unless \
+            it starts a literal or a raw lifetime"
+            .to_owned(),
         Invalid::ReservedPounds => {
             "two or more '#' in a row are reserved since edition 2024".to_owned()
         }
@@ -201,6 +201,56 @@ fn invalid_message(reason: Invalid) -> String {
         }
         Invalid::RadixExponent => "binary and octal literals cannot have an exponent".to_owned(),
         Invalid::EmptyExponent => "exponent has no digit".to_owned(),
+        Invalid::ReservedRawIdentifier => {
+            "'_', 'crate', 'self', 'Self', and 'super' cannot be raw identifiers".to_owned()
+        }
+        Invalid::TooManyRawPounds => {
+            "a raw literal is delimited by at most 255 '#' on each side".to_owned()
+        }
+        Invalid::ReservedRawLifetime => {
+            "'_', 'crate', 'self', 'Self', and 'super' cannot be raw lifetimes".to_owned()
+        }
+        Invalid::MalformedRawPrefix => {
+            "raw prefix starts no raw identifier, raw lifetime, or raw literal".to_owned()
+        }
+        Invalid::UnterminatedLiteral => "literal is not terminated".to_owned(),
+        Invalid::BareCarriageReturn => {
+            "carriage return in a literal is not followed by a line feed".to_owned()
+        }
+        Invalid::NonAsciiInByteLiteral => {
+            "byte and byte string literals can contain only ASCII characters".to_owned()
+        }
+        Invalid::NulInCString => "C string literals cannot contain a NUL character".to_owned(),
+        Invalid::Escape(reason) => escape_message(reason).to_owned(),
+        Invalid::UnderscoreSuffix => "literal suffix cannot be '_' alone".to_owned(),
+        Invalid::EmptyCharLiteral => "character literal is empty".to_owned(),
+        Invalid::UnescapedCharacter => {
+            "a quote, line feed, carriage return, or tab in a character literal must be escaped"
+                .to_owned()
+        }
+        Invalid::UnclosedCharLiteral => {
+            "character literal is not closed after one character".to_owned()
+        }
+        Invalid::CharLiteralTooLong => "character literal has more than one character".to_owned(),
+    }
+}
+
+fn escape_message(reason: InvalidEscape) -> &'static str {
+    match reason {
+        InvalidEscape::Unknown => "unknown character escape",
+        InvalidEscape::ShortHex => "'\\x' escape needs two hexadecimal digits",
+        InvalidEscape::HexOutOfRange => {
+            "'\\x' escape in a string or character literal is above '\\x7F'"
+        }
+        InvalidEscape::UnicodeNoBrace => "'\\u' escape is not followed by '{'",
+        InvalidEscape::UnicodeEmpty => "'\\u{}' escape has no hexadecimal digit",
+        InvalidEscape::UnicodeUnderscoreStart => "'\\u{...}' escape starts with '_'",
+        InvalidEscape::UnicodeOverlong => "'\\u{...}' escape has more than six hexadecimal digits",
+        InvalidEscape::UnicodeUnclosed => "'\\u{...}' escape is not closed by '}'",
+        InvalidEscape::UnicodeNotScalar => "'\\u{...}' escape is not a Unicode scalar value",
+        InvalidEscape::UnicodeInByteLiteral => {
+            "byte and byte string literals cannot contain '\\u' escapes"
+        }
     }
 }
 
@@ -210,10 +260,6 @@ fn unsupported_message(reason: Unsupported) -> String {
             format!("input that contains {} is not supported", describe(c))
         }
         Unsupported::DocComment => "doc comments are not supported".to_owned(),
-        Unsupported::RawPrefix => {
-            "raw identifiers and raw string literals are not supported".to_owned()
-        }
-        Unsupported::FloatLiteral => "floating-point literals are not supported".to_owned(),
     }
 }
 
@@ -310,7 +356,7 @@ mod tests {
         let len = ByteOffset::try_from(13_usize).unwrap();
         kinds.push(not_implemented(input, len, Path::new("main")).kind);
         kinds.push(lex_failure(lex_error("`")).kind);
-        kinds.push(lex_failure(lex_error("'")).kind);
+        kinds.push(lex_failure(lex_error("é")).kind);
 
         for (index, kind) in kinds.iter().enumerate() {
             assert!(
@@ -342,6 +388,15 @@ mod tests {
             "0x1.",
             "0b1e",
             "2e",
+            "1.0em",
+            "\"\\q\"",
+            "r#self",
+            "a\"x\"",
+            "\"a\rb\"",
+            "'ab'",
+            "b'é'",
+            "'r#self",
+            "a'x'",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
@@ -352,11 +407,12 @@ mod tests {
     #[test]
     fn unsupported_input_is_unsupported_syntax_with_a_location() {
         for text in [
-            "fn main() { 1.5 }",
+            "fn main() { 1.5é }",
             "/// doc",
             "fn café() {}",
-            "r#fn",
-            "1e3",
+            "r#é",
+            "1e3é",
+            "'é",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(
