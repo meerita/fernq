@@ -1,5 +1,5 @@
-//! An input that cannot be loaded is reported on stderr with status 1, and no
-//! output file is written.
+//! An input that cannot be loaded is reported on stderr as a diagnostic whose
+//! kind names the failure, with status 1, and no output file is written.
 
 use std::fs::{self, File};
 use std::io;
@@ -11,7 +11,7 @@ fn missing_input_is_rejected() {
     let dir = clear_test_dir("missing_input_is_rejected");
     let output_path = dir.join("main");
     let output = fernq(&dir.join("missing.rs"), &output_path);
-    assert_rejected(&output, &output_path);
+    assert_rejected(&output, &output_path, "input-not-found");
 }
 
 #[test]
@@ -21,17 +21,26 @@ fn directory_input_is_rejected() {
     fs::create_dir(&input).expect("the input directory is created");
     let output_path = dir.join("main");
     let output = fernq(&input, &output_path);
-    assert_rejected(&output, &output_path);
+    assert_rejected(&output, &output_path, "input-is-directory");
 }
 
+/// The first invalid byte follows a three-byte character on line 2, so its
+/// column counts characters, not bytes.
 #[test]
-fn non_utf8_input_is_rejected() {
-    let dir = clear_test_dir("non_utf8_input_is_rejected");
+fn non_utf8_input_is_rejected_at_the_first_invalid_byte() {
+    let dir = clear_test_dir("non_utf8_input_is_rejected_at_the_first_invalid_byte");
     let input = dir.join("main.rs");
-    fs::write(&input, b"fn main() {}\n// \xff\n").expect("the input file is written");
+    let text = ["fn main() {}\n// 中 ".as_bytes(), b"\xff\n"].concat();
+    fs::write(&input, text).expect("the input file is written");
     let output_path = dir.join("main");
     let output = fernq(&input, &output_path);
-    assert_rejected(&output, &output_path);
+    assert_rejected(&output, &output_path, "input-not-utf8");
+    let location = format!("{}:2:6", input.display());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&location),
+        "expected location {location} in stderr {:?}",
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// The input is a sparse file one byte longer than `u32::MAX` bytes.
@@ -49,7 +58,7 @@ fn oversized_input_is_rejected() {
     let output_path = dir.join("main");
     let output = fernq(&input, &output_path);
     fs::remove_file(&input).expect("the sparse input file is removed");
-    assert_rejected(&output, &output_path);
+    assert_rejected(&output, &output_path, "input-too-large");
 }
 
 fn fernq(input: &Path, output_path: &Path) -> Output {
@@ -61,12 +70,15 @@ fn fernq(input: &Path, output_path: &Path) -> Output {
         .expect("the fernq binary runs")
 }
 
-/// Asserts status 1, empty stdout, non-empty stderr, and no file at
-/// `output_path`.
-fn assert_rejected(output: &Output, output_path: &Path) {
+/// Asserts status 1, empty stdout, a diagnostic of kind `kind` on stderr, and
+/// no file at `output_path`.
+fn assert_rejected(output: &Output, output_path: &Path, kind: &str) {
+    let header = format!("error[{kind}]:");
     assert!(
-        output.status.code() == Some(1) && output.stdout.is_empty() && !output.stderr.is_empty(),
-        "expected status 1, empty stdout, non-empty stderr; \
+        output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && String::from_utf8_lossy(&output.stderr).contains(&header),
+        "expected status 1, empty stdout, {header} on stderr; \
          observed exit code {:?}, stdout {:?}, stderr {:?}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),

@@ -1,5 +1,6 @@
-//! A loaded input is reported on stderr as not compiled, because compilation
-//! is not implemented, with status 1, and no output file is written.
+//! A loaded input is reported on stderr as not compiled, with a diagnostic of
+//! kind `compilation-not-implemented` and status 1, and no output file is
+//! written.
 
 use std::fs;
 use std::io;
@@ -75,12 +76,15 @@ fn fernq(input: &Path, output_path: &Path) -> Output {
         .expect("the fernq binary runs")
 }
 
-/// Asserts status 1, empty stdout, non-empty stderr, and no file at
-/// `output_path`.
+/// Asserts status 1, empty stdout, a `compilation-not-implemented`
+/// diagnostic on stderr, and no file at `output_path`.
 fn assert_not_compiled(output: &Output, output_path: &Path) {
+    let header = "error[compilation-not-implemented]:";
     assert!(
-        output.status.code() == Some(1) && output.stdout.is_empty() && !output.stderr.is_empty(),
-        "expected status 1, empty stdout, non-empty stderr; \
+        output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && String::from_utf8_lossy(&output.stderr).contains(header),
+        "expected status 1, empty stdout, {header} on stderr; \
          observed exit code {:?}, stdout {:?}, stderr {:?}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
