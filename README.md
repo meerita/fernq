@@ -88,21 +88,9 @@ No compatibility or performance guarantees are currently made.
 
 ## Performance
 
-Performance is one of Fernq's primary goals, but benchmarks will only be published once meaningful compiler functionality exists and comparisons can be reproduced fairly.
+Performance is one of Fernq's primary goals. Fernq publishes no benchmark results.
 
-Fernq will distinguish between metrics such as:
-
-- clean build time
-- incremental build time
-- frontend latency
-- optimization time
-- code generation time
-- peak memory usage
-- CPU usage
-- generated code performance
-- generated code size
-
-A local microbenchmark improvement will not be presented as an end-to-end compiler improvement.
+[Performance](docs/performance/README.md) defines the performance classes, the rule for comparison with other compilers, and the benchmark tiers.
 
 ## Repository
 
@@ -137,6 +125,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the test, format, lint, and benchmark
 
 - [Command Line](docs/cli.md): arguments, input loading, lexing, diagnostics, and exit statuses.
 - [Compiler Session](docs/compiler-session.md): the state and inputs of one compilation.
+- [Performance](docs/performance/README.md): performance classes, comparison rule, benchmark tiers, and result context.
+- [Lexing Performance](docs/performance/lexing.md): the lexer as a benchmark subject, with planned measurements and workloads.
 
 ## Contributing
 
