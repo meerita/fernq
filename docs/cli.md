@@ -36,35 +36,55 @@ After loading, `fernq` lexes the input in the given edition. Lexing stops at the
 The supported lexical surface is:
 
 - identifiers of ASCII letters, ASCII digits, and `_` that do not start with a digit;
+- raw identifiers: `r#` followed by an identifier or keyword, such as `r#fn`, in every edition. A raw identifier is never a keyword;
 - the strict and reserved keywords of the Rust Reference for Rust 1.99.0, by edition: `async`, `await`, `dyn`, and `try` are keywords from edition 2018, and `gen` from edition 2024; in earlier editions they are identifiers; weak keywords such as `union` and `macro_rules` are identifiers;
-- integer literals in decimal, binary (`0b`), octal (`0o`), and hexadecimal (`0x`), with `_` separators and an optional suffix of ASCII letters, digits, and `_`, such as `98_222`, `0xff`, `0b1111_0000`, and `1u8`. Lexing does not check the suffix or the value: `1suffix` and `340282366920938463463374607431768211456` lex;
+- lifetimes: `'` followed by an identifier or keyword, such as `'a`, `'static`, `'_`, and `'fn`. Lexing does not reject a keyword lifetime; `rustc` rejects `'fn` only where the grammar requires a lifetime or a label. From edition 2021, raw lifetimes: `'r#` followed by an identifier or keyword, such as `'r#fn`;
+- integer literals in decimal, binary (`0b`), octal (`0o`), and hexadecimal (`0x`), with `_` separators and an optional suffix of ASCII letters, digits, and `_`, such as `98_222`, `0xff`, `0b1111_0000`, and `1u8`;
+- floating-point literals: decimal digits with a fractional part, an exponent, or both, and decimal digits followed by a `.` that starts no other token, with an optional suffix, such as `1.0`, `1.`, `1e3`, `1E+3`, `1_000.5e-3`, and `2.5f32`. Without an exponent, the suffix cannot start with `e` or `E`: `1.0em` is an exponent with no digit. After an exponent, the suffix can: `2e5e6` is one token;
+- character literals, such as `'a'`, `'\n'`, `'\u{E9}'`, and `'é'`, and byte literals, such as `b'a'` and `b'\xFF'`;
+- string literals and raw string literals, such as `"a"`, `r"a"`, and `r#"a"b"#`; byte string literals and raw byte string literals, such as `b"a"` and `br"a"`; from edition 2021, C string literals and raw C string literals, such as `c"a"` and `cr#"a"#`. A raw literal has the same number of `#`, at most 255, on each side;
 - the punctuation of the Rust Reference other than delimiters: `+` `-` `*` `/` `%` `^` `!` `&` `|` `&&` `||` `<<` `>>` `+=` `-=` `*=` `/=` `%=` `^=` `&=` `|=` `<<=` `>>=` `=` `==` `!=` `>` `<` `>=` `<=` `@` `.` `..` `...` `..=` `,` `;` `:` `::` `->` `=>` `<-` `#` `$` `?` `~`. Adjacent punctuation forms the longest token first: `&&&` is `&&` then `&`, and `x<-1` contains `<-`. Whitespace and comments separate tokens: `< <` is two tokens;
-- the delimiters `(`, `)`, `[`, `]`, `{`, and `}`; lexing does not check that delimiters pair, so `fn main( {}` lexes;
+- the delimiters `(`, `)`, `[`, `]`, `{`, and `}`. Lexing does not check that delimiters pair, so `fn main( {}` lexes. A delimiter character inside a literal or a comment is not a delimiter;
 - whitespace: U+0009 to U+000D, U+0020, U+0085, U+200E, U+200F, U+2028, and U+2029;
 - line comments and nested block comments that are not doc comments;
 - a byte order mark at the start of the file;
 - a shebang line at the start of the file or after the byte order mark. As Rust requires, `#!` followed by `[`, after whitespace and non-doc comments, starts an inner attribute, not a shebang. After the start of the file, `#!` is the punctuation `#` and `!`.
 
-After the digits of an integer literal without a suffix, `.` followed by `.`, `_`, or an ASCII letter is the next token: `1..2` is `1`, `..`, `2`, and `1.foo` is `1`, `.`, `foo`. Any other `.` makes a decimal literal a floating-point literal, as does an exponent such as `e3`. After binary, octal, or hexadecimal digits, it is a lexical error. After a suffix, `.` is always the next token: `1u8.0` is `1u8`, `.`, `0`.
+Lexing checks the lexical form of each literal, as the Rust Reference defines it, and computes no value:
 
-The edition changes how `#` lexes:
+- Escapes: every literal class that has escapes accepts `\n`, `\r`, `\t`, `\\`, `\'`, and `\"`, and every class other than C string literals accepts `\0`. `\x` takes two hexadecimal digits, at most `\x7F` in character and string literals. `\u{...}` takes one to six hexadecimal digits, each optionally followed by `_`, whose value is a Unicode scalar value; byte and byte string literals do not accept it. `\` directly before a line break continues a string, byte string, or C string literal. Raw literals have no escapes.
+- CR followed by LF inside a literal counts as LF. Any other CR inside a literal is a lexical error.
+- Byte, byte string, and raw byte string literals contain only ASCII characters. C string and raw C string literals contain no NUL character and no escape whose value is 0.
+- A character or byte literal contains one character or one escape. `'`, LF, CR, and TAB in it must be escaped.
+- A suffix directly after a literal is part of the literal token: `"a"suffix`, `'a'b`, and `1.0f80` lex. A suffix is an ASCII letter, or `_` followed by an ASCII letter, digit, or `_`, then ASCII letters, digits, and `_`. A suffix of `_` alone is a lexical error.
+
+Lexing does not check whether a suffix is valid for its literal, and does not check that an integer value fits a type: `1suffix` and `340282366920938463463374607431768211456` lex. `rustc` reports these where it uses the literal value.
+
+After the digits of an integer literal without a suffix, `.` followed by `.`, `_`, or an ASCII letter is the next token: `1..2` is `1`, `..`, `2`, `1.foo` is `1`, `.`, `foo`, and `1.f32` is `1`, `.`, `f32`. Any other `.` after decimal digits starts a floating-point literal: `1.0.0` is `1.0`, `.`, `0`, and `t.0.1` is `t`, `.`, `0.1`. After binary, octal, or hexadecimal digits, it is a lexical error. After a suffix, `.` is always the next token: `1u8.0` is `1u8`, `.`, `0`.
+
+The edition changes how these inputs lex:
 
 | Input | Editions 2015 and 2018 | Edition 2021 | Edition 2024 |
 |---|---|---|---|
-| An identifier or keyword directly followed by `#`, such as `a#b` | identifier, `#`, identifier | `lexical-error`: reserved prefix | `lexical-error`: reserved prefix |
-| `r#` or `br#` | `unsupported-syntax` | `unsupported-syntax` | `unsupported-syntax` |
-| `cr#` | identifier, `#` | `unsupported-syntax` | `unsupported-syntax` |
+| An identifier or keyword directly followed by `#`, such as `a#b`, other than `r#`, `br#`, and from 2021 `cr#` | identifier, `#`, identifier | `lexical-error`: reserved prefix | `lexical-error`: reserved prefix |
+| An identifier or keyword directly followed by `"` or `'` that is not a literal prefix, such as `a"x"`, `rb"x"`, and `r'x'` | identifier, then the literal | `lexical-error`: reserved prefix | `lexical-error`: reserved prefix |
+| `c` or `cr` directly followed by `"`, such as `c"x"` | identifier, then a string literal | C string or raw C string literal | C string or raw C string literal |
+| `cr#`, such as `cr#a` and `cr#"x"#` | identifier, `#`, then the rest | raw C string literal, or `lexical-error` | raw C string literal, or `lexical-error` |
+| A lifetime directly followed by `#`, such as `'a#b` | lifetime, `#`, identifier | `lexical-error`: reserved prefix | `lexical-error`: reserved prefix |
+| `'r#` followed by an identifier, such as `'r#a` | lifetime `'r`, `#`, identifier | raw lifetime | raw lifetime |
 | Two or more `#` in a row, such as `##` | one `#` each | one `#` each | `lexical-error`: reserved |
-| `#` directly followed by `"` | `#`, then `unsupported-syntax` at `"` | `#`, then `unsupported-syntax` at `"` | `lexical-error`: reserved |
+| `#` directly followed by `"` | `#`, then a string literal | `#`, then a string literal | `lexical-error`: reserved |
+
+The literal prefixes are `b`, `r`, and `br` before `"`, `b` before `'`, and from edition 2021 `c` and `cr` before `"`. In every edition, `r#`, `br#`, and from 2021 `cr#` start a raw literal, and `r#` also starts a raw identifier. No reserved prefix applies after a raw identifier or a raw lifetime: `r#a#b`, `r#x"a"#`, and `'r#a#b` lex. A raw string after `#` is not reserved: in edition 2024, `#r"x"` is `#` and a raw string literal.
 
 Input outside this surface gets one of two diagnostic kinds:
 
 | Kind | Input | Location |
 |---|---|---|
-| `lexical-error` | The input is not valid Rust: a backtick, a backslash, U+0000 to U+0008, U+000E to U+001F, U+007F; a block comment that is not a doc comment and has no closing `*/`; a binary or octal digit outside the radix (`0b0102`); a radix prefix with no digit (`0b_`, `0xG`); a binary or octal literal followed by `e` or `E` (`0b101e`); a binary, octal, or hexadecimal literal followed by a `.` that starts no other token (`0x80.0`); an exponent with no digit (`2e`, `2em`); the reserved `#` forms in the table above. | The character, the outermost `/*` of the unterminated comment, or the start of the literal or of the reserved form. |
-| `unsupported-syntax` | Any other input. The input can be valid Rust. This includes floating-point literals, string, byte string, and character literals, raw identifiers and raw strings, lifetimes, doc comments, and non-ASCII characters other than whitespace. | The first unsupported character, the start of the doc comment, the start of the floating-point literal, or the start of the raw prefix. |
+| `lexical-error` | The input is not valid Rust: a backtick, a backslash, U+0000 to U+0008, U+000E to U+001F, U+007F outside a literal; a block comment that is not a doc comment and has no closing `*/`; a binary or octal digit outside the radix (`0b0102`); a radix prefix with no digit (`0b_`, `0xG`); a binary or octal literal followed by `e` or `E` (`0b101e`); a binary, octal, or hexadecimal literal followed by a `.` that starts no other token (`0x80.0`); an exponent with no digit (`2e`, `1.0em`); an invalid escape (`"\q"`, `"\x80"`, `'\u{D800}'`, `b"\u{41}"`); a CR not followed by LF inside a literal; a non-ASCII character in a byte or byte string literal (`b'é'`); a NUL character or an escape whose value is 0 in a C string literal (`c"\0"`); a literal with no closing quote, or a raw literal with no closing `#`; more than 255 `#` after a raw prefix; a raw prefix that starts no raw identifier, raw lifetime, or raw literal (`r##a`, `r# a`, `br#a`, `'r#1`); `_`, `crate`, `self`, `Self`, or `super` as a raw identifier or raw lifetime (`r#self`, `'r#self`); a character or byte literal that is empty, has more than one character, or is not closed (`''`, `'ab'`, `'1a`); an unescaped `'`, LF, CR, or TAB in a character or byte literal; a suffix of `_` alone (`"a"_`); the reserved forms in the table above. | The start of the literal or of the reserved form, the escape, or the character inside the literal that breaks the rule. For a character, the character. For an unterminated comment, the outermost `/*`. |
+| `unsupported-syntax` | Doc comments, and non-ASCII characters other than whitespace outside literals. The input can be valid Rust. | The start of the doc comment, or the non-ASCII character. |
 
-Non-ASCII identifiers and suffixes are unsupported. `fernq` does not report a non-ASCII character as a lexical error, because it does not yet distinguish identifier characters from characters that no Rust token can start. For the same reason, an identifier, keyword, or integer literal directly followed by a non-ASCII character other than whitespace is unsupported at that character. The same applies to an integer literal followed by `.` and such a character. `café`, `1é`, `1.é`, and `0x1.é` report `unsupported-syntax` at `é`. An identifier directly followed by `"` or `'`, such as `b"x"`, is unsupported at the quote.
+Non-ASCII identifiers, raw identifiers, lifetimes, raw lifetimes, and suffixes are unsupported. `fernq` does not report a non-ASCII character outside a literal as a lexical error, because it does not yet distinguish identifier characters from characters that no Rust token can start. For the same reason, a non-ASCII character other than whitespace is unsupported at that character when it directly follows an identifier, keyword, raw identifier, lifetime, raw lifetime, `r#`, `'r#`, or a literal and its suffix, and when it follows `'` without a closing `'` after it, because it can start a lifetime. `café`, `1é`, `1.é`, `1.0é`, `r#é`, `'é`, `'aé`, and `"a"é` report `unsupported-syntax` at `é`. Non-ASCII characters inside string, raw string, C string, raw C string, and character literals are supported: `"é"`, `r"é"`, and `'é'` lex.
 
 ## Diagnostics
 
