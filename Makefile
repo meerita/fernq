@@ -95,8 +95,25 @@ fuzz:
 		[1-9]|[1-9][0-9]|1[01][0-9]|120) ;; \
 		*) echo "FUZZ_SECONDS must be a whole number of seconds from 1 to $(FUZZ_MAX_SECONDS), not '$(FUZZ_SECONDS)'" >&2; exit 2 ;; \
 	esac
-	mkdir -p $(FUZZ_CORPUS)
-	cargo fuzz run -s none lex $(FUZZ_CORPUS) $(FUZZ_SEEDS) -- -max_total_time=$(FUZZ_SECONDS)
+	cargo fuzz build -s none lex
+	mkdir -p $(FUZZ_CORPUS) fuzz/artifacts/lex
+	@# libFuzzer checks -max_total_time only between inputs, so a watchdog
+	@# ends the session at FUZZ_SECONDS of wall time. A session that reaches
+	@# the limit found no crash: a crash ends it and writes an artifact.
+	@limit=$(FUZZ_SECONDS); soft=$$((limit > 1 ? limit - 1 : 1)); \
+	bin=fuzz/target/$$(rustc -vV | sed -n 's/^host: //p')/release/lex; \
+	crashes=$$(ls fuzz/artifacts/lex | wc -l); \
+	echo "$$bin -max_total_time=$$soft (hard limit $$limit s)"; \
+	$$bin -max_total_time=$$soft -print_final_stats=1 -artifact_prefix=fuzz/artifacts/lex/ \
+		$(FUZZ_CORPUS) $(FUZZ_SEEDS) & fuzzer=$$!; \
+	( sleep $$limit; kill -TERM $$fuzzer 2>/dev/null ) & watchdog=$$!; \
+	wait $$fuzzer; status=$$?; \
+	if kill $$watchdog 2>/dev/null; then stopped=no; else stopped=yes; fi; \
+	if [ "$$(ls fuzz/artifacts/lex | wc -l)" -ne "$$crashes" ]; then \
+		echo "the session wrote a crash artifact to fuzz/artifacts/lex" >&2; exit 1; \
+	fi; \
+	if [ "$$stopped" = yes ]; then echo "the session reached its $$limit s limit"; exit 0; fi; \
+	exit $$status
 
 unicode-tables:
 	@test -n "$(UCD)" || { echo "usage: make unicode-tables UCD=<path of DerivedCoreProperties.txt>" >&2; exit 2; }
