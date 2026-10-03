@@ -98,20 +98,26 @@ fn lex_checked(id: SourceId, text: &str, edition: Edition) -> Vec<Result<Token, 
 mod tests {
     use super::*;
 
-    use std::fs;
-    use std::path::Path;
-
+    /// The compile fixtures, embedded at build time: unit tests read no file.
     #[test]
     fn every_compile_fixture_passes_the_check() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compile-fail");
-        let mut count = 0;
-        for entry in fs::read_dir(&dir).expect("the fixture directory is readable") {
-            let path = entry.expect("the fixture entry is readable").path();
-            let text = fs::read_to_string(&path).expect("the fixture is UTF-8");
-            check_lexing(&text);
-            count += 1;
+        for text in [
+            include_str!("../tests/fixtures/compile-fail/char-literal-too-long.rs"),
+            include_str!("../tests/fixtures/compile-fail/float-empty-exponent.rs"),
+            include_str!("../tests/fixtures/compile-fail/invalid-binary-digit.rs"),
+            include_str!("../tests/fixtures/compile-fail/non-ascii-byte-literal.rs"),
+            include_str!("../tests/fixtures/compile-fail/non-identifier-character.rs"),
+            include_str!("../tests/fixtures/compile-fail/reserved-pounds.rs"),
+            include_str!("../tests/fixtures/compile-fail/reserved-prefix-before-string.rs"),
+            include_str!("../tests/fixtures/compile-fail/reserved-raw-identifier.rs"),
+            include_str!("../tests/fixtures/compile-fail/reserved-raw-lifetime.rs"),
+            include_str!("../tests/fixtures/compile-fail/stray-backtick.rs"),
+            include_str!("../tests/fixtures/compile-fail/unclosed-paren.rs"),
+            include_str!("../tests/fixtures/compile-fail/unknown-string-escape.rs"),
+            include_str!("../tests/fixtures/compile-fail/unterminated-block-comment.rs"),
+        ] {
+            check_lexing(text);
         }
-        assert!(count > 0, "no fixture in {}", dir.display());
     }
 
     #[test]
