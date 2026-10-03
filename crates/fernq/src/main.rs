@@ -39,7 +39,7 @@ use std::process::ExitCode;
 use cli::{Command, Invocation, USAGE, UsageError};
 use diagnostic::{Diagnostic, DiagnosticKind, Location};
 use edition::Edition;
-use lexer::{Invalid, LexError, LexErrorKind, Lexer, TokenKind, Unsupported};
+use lexer::{Invalid, InvalidEscape, LexError, LexErrorKind, Lexer, TokenKind, Unsupported};
 use source::{ByteOffset, LoadError, SourceId, SourceTable};
 
 const HELP: &str = "\
@@ -184,10 +184,9 @@ fn invalid_message(reason: Invalid) -> String {
     match reason {
         Invalid::Character(c) => format!("{} cannot start a token", describe(c)),
         Invalid::UnterminatedBlockComment => "block comment is not terminated".to_owned(),
-        Invalid::ReservedPrefix => {
-            "an identifier directly followed by '#' is a reserved prefix since edition 2021"
-                .to_owned()
-        }
+        Invalid::ReservedPrefix => "an identifier directly followed by '#' or '\"' \
+            that does not start a literal is a reserved prefix since edition 2021"
+            .to_owned(),
         Invalid::ReservedPounds => {
             "two or more '#' in a row are reserved since edition 2024".to_owned()
         }
@@ -201,6 +200,42 @@ fn invalid_message(reason: Invalid) -> String {
         }
         Invalid::RadixExponent => "binary and octal literals cannot have an exponent".to_owned(),
         Invalid::EmptyExponent => "exponent has no digit".to_owned(),
+        Invalid::ReservedRawIdentifier => {
+            "'_', 'crate', 'self', 'Self', and 'super' cannot be raw identifiers".to_owned()
+        }
+        Invalid::TooManyRawPounds => {
+            "a raw literal is delimited by at most 255 '#' on each side".to_owned()
+        }
+        Invalid::MalformedRawPrefix => {
+            "raw prefix starts neither a raw identifier nor a raw literal".to_owned()
+        }
+        Invalid::UnterminatedLiteral => "literal is not terminated".to_owned(),
+        Invalid::BareCarriageReturn => {
+            "carriage return in a literal is not followed by a line feed".to_owned()
+        }
+        Invalid::NonAsciiInByteLiteral => {
+            "byte string literals can contain only ASCII characters".to_owned()
+        }
+        Invalid::NulInCString => "C string literals cannot contain a NUL character".to_owned(),
+        Invalid::Escape(reason) => escape_message(reason).to_owned(),
+        Invalid::UnderscoreSuffix => "literal suffix cannot be '_' alone".to_owned(),
+    }
+}
+
+fn escape_message(reason: InvalidEscape) -> &'static str {
+    match reason {
+        InvalidEscape::Unknown => "unknown character escape",
+        InvalidEscape::ShortHex => "'\\x' escape needs two hexadecimal digits",
+        InvalidEscape::HexOutOfRange => {
+            "'\\x' escape in a string or character literal is above '\\x7F'"
+        }
+        InvalidEscape::UnicodeNoBrace => "'\\u' escape is not followed by '{'",
+        InvalidEscape::UnicodeEmpty => "'\\u{}' escape has no hexadecimal digit",
+        InvalidEscape::UnicodeUnderscoreStart => "'\\u{...}' escape starts with '_'",
+        InvalidEscape::UnicodeOverlong => "'\\u{...}' escape has more than six hexadecimal digits",
+        InvalidEscape::UnicodeUnclosed => "'\\u{...}' escape is not closed by '}'",
+        InvalidEscape::UnicodeNotScalar => "'\\u{...}' escape is not a Unicode scalar value",
+        InvalidEscape::UnicodeInByteLiteral => "byte string literals cannot contain '\\u' escapes",
     }
 }
 
@@ -210,9 +245,6 @@ fn unsupported_message(reason: Unsupported) -> String {
             format!("input that contains {} is not supported", describe(c))
         }
         Unsupported::DocComment => "doc comments are not supported".to_owned(),
-        Unsupported::RawPrefix => {
-            "raw identifiers and raw string literals are not supported".to_owned()
-        }
     }
 }
 
@@ -342,6 +374,10 @@ mod tests {
             "0b1e",
             "2e",
             "1.0em",
+            "\"\\q\"",
+            "r#self",
+            "a\"x\"",
+            "\"a\rb\"",
         ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
@@ -355,7 +391,7 @@ mod tests {
             "fn main() { 1.5é }",
             "/// doc",
             "fn café() {}",
-            "r#fn",
+            "r#é",
             "1e3é",
         ] {
             let diagnostic = lex_failure(lex_error(text));
