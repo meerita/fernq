@@ -18,15 +18,15 @@ fn invalid_input_is_a_lexical_error_at_its_location() {
     );
 }
 
-/// `=` starts punctuation, which the lexer does not support. The column
+/// `"` starts a string literal, which the lexer does not support. The column
 /// counts the multibyte character in the comment as one.
 #[test]
 fn unsupported_input_is_unsupported_syntax_at_its_location() {
     assert_rejected_at(
         "unsupported_input_is_unsupported_syntax_at_its_location",
-        "fn main() {\n    /* é */ let x = y;\n}\n",
+        "fn main() {\n    /* é */ let x = \"y\";\n}\n",
         "unsupported-syntax",
-        "2:19",
+        "2:21",
     );
 }
 

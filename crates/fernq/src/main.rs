@@ -170,25 +170,51 @@ fn lex(source: SourceId, text: &str, edition: Edition) -> Result<(), LexError> {
 
 fn lex_failure(error: LexError) -> Diagnostic {
     let (kind, message) = match error.kind() {
-        LexErrorKind::Invalid(Invalid::Character(c)) => (
-            DiagnosticKind::LexicalError,
-            format!("{} cannot start a token", describe(c)),
-        ),
-        LexErrorKind::Invalid(Invalid::UnterminatedBlockComment) => (
-            DiagnosticKind::LexicalError,
-            "block comment is not terminated".to_owned(),
-        ),
-        LexErrorKind::Unsupported(Unsupported::Character(c)) => (
+        LexErrorKind::Invalid(reason) => (DiagnosticKind::LexicalError, invalid_message(reason)),
+        LexErrorKind::Unsupported(reason) => (
             DiagnosticKind::UnsupportedSyntax,
-            format!("input that starts with {} is not supported", describe(c)),
-        ),
-        LexErrorKind::Unsupported(Unsupported::DocComment) => (
-            DiagnosticKind::UnsupportedSyntax,
-            "doc comments are not supported".to_owned(),
+            unsupported_message(reason),
         ),
     };
     let location = Location::source(error.source(), error.span());
     Diagnostic::error(kind, message, Some(location))
+}
+
+fn invalid_message(reason: Invalid) -> String {
+    match reason {
+        Invalid::Character(c) => format!("{} cannot start a token", describe(c)),
+        Invalid::UnterminatedBlockComment => "block comment is not terminated".to_owned(),
+        Invalid::ReservedPrefix => {
+            "an identifier directly followed by '#' is a reserved prefix since edition 2021"
+                .to_owned()
+        }
+        Invalid::ReservedPounds => {
+            "two or more '#' in a row are reserved since edition 2024".to_owned()
+        }
+        Invalid::ReservedGuardedString => {
+            "'#' directly followed by '\"' is reserved since edition 2024".to_owned()
+        }
+        Invalid::DigitOutOfRadix => "integer literal has a digit outside its radix".to_owned(),
+        Invalid::NoRadixDigits => "integer literal has no digit after its radix prefix".to_owned(),
+        Invalid::RadixPeriod => {
+            "binary, octal, and hexadecimal literals cannot have a fractional part".to_owned()
+        }
+        Invalid::RadixExponent => "binary and octal literals cannot have an exponent".to_owned(),
+        Invalid::EmptyExponent => "exponent has no digit".to_owned(),
+    }
+}
+
+fn unsupported_message(reason: Unsupported) -> String {
+    match reason {
+        Unsupported::Character(c) => {
+            format!("input that contains {} is not supported", describe(c))
+        }
+        Unsupported::DocComment => "doc comments are not supported".to_owned(),
+        Unsupported::RawPrefix => {
+            "raw identifiers and raw string literals are not supported".to_owned()
+        }
+        Unsupported::FloatLiteral => "floating-point literals are not supported".to_owned(),
+    }
 }
 
 /// Names `c` by its code point, quoted as well when it is printable ASCII.
@@ -284,7 +310,7 @@ mod tests {
         let len = ByteOffset::try_from(13_usize).unwrap();
         kinds.push(not_implemented(input, len, Path::new("main")).kind);
         kinds.push(lex_failure(lex_error("`")).kind);
-        kinds.push(lex_failure(lex_error("1")).kind);
+        kinds.push(lex_failure(lex_error("'")).kind);
 
         for (index, kind) in kinds.iter().enumerate() {
             assert!(
@@ -305,7 +331,18 @@ mod tests {
 
     #[test]
     fn invalid_input_is_a_lexical_error_with_a_location() {
-        for text in ["fn `", "/* a /* b */"] {
+        for text in [
+            "fn `",
+            "/* a /* b */",
+            "a#b",
+            "##",
+            "#\"",
+            "0b2",
+            "0x",
+            "0x1.",
+            "0b1e",
+            "2e",
+        ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(diagnostic.kind, DiagnosticKind::LexicalError, "{text:?}");
             assert!(diagnostic.location.is_some(), "{diagnostic:?}");
@@ -314,7 +351,13 @@ mod tests {
 
     #[test]
     fn unsupported_input_is_unsupported_syntax_with_a_location() {
-        for text in ["fn main() { 1 }", "/// doc", "fn café() {}"] {
+        for text in [
+            "fn main() { 1.5 }",
+            "/// doc",
+            "fn café() {}",
+            "r#fn",
+            "1e3",
+        ] {
             let diagnostic = lex_failure(lex_error(text));
             assert_eq!(
                 diagnostic.kind,
