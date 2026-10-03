@@ -162,7 +162,7 @@ Additional compiler, integration, compatibility, or benchmark validation may be 
 Unit tests:
 
 - Place unit tests in a `#[cfg(test)] mod tests` module at the end of the tested module.
-- Unit tests do not read or write files.
+- Unit tests do not read or write files. Unit tests of source loading read in-memory input.
 - A test name describes the tested behavior.
 
 Integration tests:
@@ -178,12 +178,13 @@ Compile fixtures:
 - The fixture runner, `crates/fernq/tests/compile_fixtures.rs`, runs every fixture. A new fixture in an existing class needs no new test code. A new class directory needs an entry in the runner's class list.
 - The fixture runner reports a file directly in `tests/fixtures/`, an unknown class directory, and a non-`.rs` file in a class directory.
 
-The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. The driver does not read its input, so every fixture currently expects the valid-invocation outcome that [README.md](README.md#building) describes: exit status 1, empty stdout, and no file at the output path. The runner does not compare stderr. No stage rejects input yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
+The only fixture class is `compile-fail`. The runner runs each fixture as `fernq <fixture> -o <dir>/<fixture stem>`, where `<dir>` is the runner's `CARGO_TARGET_TMPDIR/<test-name>/` directory. Compilation is not implemented, so every fixture currently expects the valid-invocation outcome that [README.md](README.md#building) describes: exit status 1, empty stdout, and no file at the output path. The runner does not compare stderr. An input that cannot be loaded also exits with status 1, so the runner cannot tell a load failure from the not-implemented outcome. No compiler stage rejects source yet, so the runner does not check that the driver rejects a `compile-fail` fixture.
 
 Temporary output:
 
 - Only integration tests write temporary output.
 - A test writes under `CARGO_TARGET_TMPDIR/<test-name>/`. It clears that directory at start and leaves it after the run for inspection.
+- A test that creates a large temporary file removes it before its assertions, and its doc comment states why.
 
 Expected output:
 
