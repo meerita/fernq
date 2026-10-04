@@ -1,6 +1,6 @@
 //! Writes the synthetic workloads of the lexer benchmark.
 //!
-//! Usage: `corpus-gen <directory>`. Writes nine workload classes at five
+//! Usage: `corpus-gen <directory>`. Writes ten workload classes at five
 //! sizes, `<class>-<size>.rs`, as edition 2024 source that lexes to the end of
 //! file. Each file is a sequence of fragments from the grammar of its class,
 //! each fragment ending in whitespace, padded with newlines to its exact size.
@@ -25,16 +25,19 @@ const SIZES: [(&str, usize); 5] = [
 /// Appends one fragment of a workload class, ending in whitespace.
 type Fragment = fn(&mut Rng, &mut String);
 
-const CLASSES: [(&str, Fragment); 9] = [
+/// The position of a class selects its random stream: a new class goes last,
+/// so the bytes of the other classes stay the same.
+const CLASSES: [(&str, Fragment); 10] = [
     ("identifiers", identifiers),
     ("keywords", keywords),
     ("delimiters", delimiters),
     ("whitespace", whitespace),
-    ("comments", comments),
+    ("line-comments", line_comments),
     ("punctuation", punctuation),
     ("strings", strings),
     ("raw-strings", raw_strings),
     ("non-ascii-identifiers", non_ascii_identifiers),
+    ("block-comments", block_comments),
 ];
 
 /// The strict and reserved keywords of edition 2024.
@@ -237,18 +240,28 @@ fn block_comment(rng: &mut Rng, out: &mut String, depth: usize) {
     out.push_str(" */");
 }
 
-fn comments(rng: &mut Rng, out: &mut String) {
+/// An indented line comment, or now and then a short statement between
+/// comments.
+fn line_comments(rng: &mut Rng, out: &mut String) {
+    out.push_str(rng.pick(&["", "    ", "    ", "        ", "            "]));
     match rng.below(8) {
-        0..=2 => {
-            out.push_str("//");
-            words(rng, out, 2, 12);
-        }
-        3 => {
+        0 => out.push_str("x;"),
+        1 => {
             // Four or more slashes open a line comment that is not a doc comment.
             out.push_str(&"/".repeat(rng.range(4, 12)));
             words(rng, out, 0, 4);
         }
-        4..=6 => block_comment(rng, out, 3),
+        _ => {
+            out.push_str("//");
+            words(rng, out, 3, 12);
+        }
+    }
+    out.push('\n');
+}
+
+fn block_comments(rng: &mut Rng, out: &mut String) {
+    match rng.below(4) {
+        0..=2 => block_comment(rng, out, 3),
         _ => out.push_str(rng.pick(&["/**/", "/***/", "x; /* */"])),
     }
     out.push('\n');
