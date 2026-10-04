@@ -59,9 +59,19 @@ const _: () = assert!(
 
 /// The identity of a file in the [`SourceTable`] that loaded it.
 ///
-/// Only the table constructs an id.
+/// Only the table constructs an id, except [`SourceId::benchmark`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceId(u32);
+
+#[cfg(any(test, feature = "bench"))]
+impl SourceId {
+    /// An id that no table assigned, for the benchmark entry, which lexes a
+    /// text outside any table and exposes no lexical error. It names no file
+    /// and must not reach [`SourceTable::get`].
+    pub(crate) const fn benchmark() -> Self {
+        Self(0)
+    }
+}
 
 /// A position in bytes from the start of one source file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -111,7 +121,7 @@ impl Span {
     }
 
     /// The offset just past the last byte in the span.
-    #[cfg(any(test, feature = "fuzzing"))]
+    #[cfg(any(test, feature = "fuzzing", feature = "bench"))]
     pub(crate) fn hi(self) -> ByteOffset {
         self.hi
     }

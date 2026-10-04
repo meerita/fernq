@@ -129,11 +129,13 @@ cargo fmt    --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p fernq --all-targets --locked --features fuzzing -- -D warnings
 cargo test   -p fernq --lib --locked --features fuzzing -- fuzz::
+cargo clippy -p fernq --all-targets --locked --features bench -- -D warnings
+cargo test   -p fernq --lib --locked --features bench -- bench::
 ```
 
-The last two commands check the fuzz entry, which the Cargo feature `fuzzing` enables. Test targets build with `opt-level = 1` (`[profile.test]` in `Cargo.toml`); they keep debug assertions and overflow checks.
+The last four commands check the fuzz entry and the benchmark entry, which the Cargo features `fuzzing` and `bench` enable. Test targets build with `opt-level = 1` (`[profile.test]` in `Cargo.toml`); they keep debug assertions and overflow checks.
 
-Benchmarks are not part of the baseline checks. Run them when a change raises a performance question, with the benchmark tier that question needs ([Performance](docs/performance/README.md); see also [Performance Changes](#performance-changes)). `make bench` runs `cargo bench --workspace --locked`.
+Benchmarks are not part of the baseline checks. Run them when a change raises a performance question, with the benchmark tier that question needs ([Performance](docs/performance/README.md); see also [Performance Changes](#performance-changes) and [Lexer benchmark](#lexer-benchmark)).
 
 Fernq has no hosted CI. Run the checks locally before you open a pull request.
 
@@ -144,22 +146,23 @@ docker build --platform linux/arm64 -f docker/linux-check.Dockerfile -t fernq-li
 docker run --rm --platform linux/arm64 -v "$PWD:/src:ro" fernq-linux-check
 ```
 
-The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It does not build or run benchmarks or fuzz sessions. It also runs the fuzz entry checks that `make fuzzing` runs and the Unicode table generator checks that `make tools` runs.
+The container uses the toolchain that `rust-toolchain.toml` pins. It mounts the source tree read-only and keeps build output inside the container. It does not build or run benchmarks or fuzz sessions. It also runs the feature checks that `make features` runs and the Unicode table generator checks that `make tools` runs.
 
 The container is validated on an aarch64 host, where it runs natively. On other host architectures, Docker must emulate `linux/arm64`. That setup is not validated.
 
 The root `Makefile` runs the same commands. `make` with no target lists the targets. The main targets are:
 
 ```text
-make check       host checks: fmt, clippy, build, test, fuzzing, tools
-make fuzzing     clippy and fuzz entry tests with the fuzzing feature
-make bench       cargo bench; not part of check
-make fuzz        one lexer fuzz session; not part of check
-make tools       format check, lint, and unit tests of the Unicode table generator
-make up          build the Linux container image
-make linux       run the checks in the Linux container
-make check-all   host checks, then the Linux container
-make down        remove the Linux container image
+make check         host checks: fmt, clippy, build, test, features, tools
+make features      clippy and entry tests with the fuzzing feature, then the bench feature
+make bench-corpus  build the lexer benchmark corpora; not part of check
+make bench         run the lexer benchmark; not part of check
+make fuzz          one lexer fuzz session; not part of check
+make tools         format check, lint, and unit tests of the Unicode table generator
+make up            build the Linux container image
+make linux         run the checks in the Linux container
+make check-all     host checks, then the Linux container
+make down          remove the Linux container image
 ```
 
 `make scan` scans the pinned base image with Docker Scout and requires `docker login`.
@@ -191,6 +194,21 @@ A crash writes its input to `fuzz/artifacts/lex/` and fails `make fuzz`. To fix 
 3. Fix the defect, then run `make fuzz` again.
 
 `make fuzz` is not part of `make check` or the Linux container. The container has no C++ compiler, so fuzzing is validated on the host only.
+
+### Lexer benchmark
+
+`bench/` holds the lexer benchmark, a crate outside the workspace with its own `Cargo.lock`. Its dependencies are development tools and are not part of the compiler. [Lexing Performance](docs/performance/lexing.md) describes the method: the corpora, the gates, the reference adapter, and the output files.
+
+```sh
+make bench-corpus                       # build bench/corpus/; downloads three crates
+make bench                              # dev tier: one run
+make bench TIER=validation              # validation tier: two runs, the second in reversed order
+make bench-corpus FERNQ_CORPUS_REV=dev  # take the Fernq part of the corpus from another revision
+```
+
+`make bench-corpus` needs `curl`, `git`, and `sha256sum` or `shasum`, and network access to `static.crates.io`. It verifies each crate archive against its pinned SHA-256 before it extracts any, and stops on a mismatch. `make bench` needs the corpus, accepts only `TIER=dev` and `TIER=validation` (any other value exits with status 2), and stops before timing when the equivalence gate finds a difference or the allocation gate finds an allocation in `fernq::bench::lex` or the adapter. Results go to `bench/results/<UTC time>-<tier>/`. `bench/corpus/` and `bench/results/` are ignored by Git.
+
+Run one benchmark at a time, with no other build or benchmark on the host. Neither target is part of `make check` or the Linux container.
 
 ### Test conventions
 

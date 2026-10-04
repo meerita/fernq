@@ -8,6 +8,8 @@ publish.workspace = true
 [features]
 # Adds the hidden `fernq::fuzz::lex` entry for the fuzz target in `fuzz/`.
 fuzzing = []
+# Adds the hidden `fernq::bench` entries for the lexer benchmark harness in `bench/`.
+bench = []
 
 [lints]
 workspace = true

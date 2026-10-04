@@ -126,7 +126,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the test, format, lint, and benchmark
 - [Command Line](docs/cli.md): arguments, input loading, lexing, diagnostics, and exit statuses.
 - [Compiler Session](docs/compiler-session.md): the state and inputs of one compilation.
 - [Performance](docs/performance/README.md): performance classes, comparison rule, benchmark tiers, and result context.
-- [Lexing Performance](docs/performance/lexing.md): the lexer as a benchmark subject, with planned measurements and workloads.
+- [Lexing Performance](docs/performance/lexing.md): how Fernq measures its lexer: the benchmark harness, the corpora, and the comparison with an equivalent-work lexer over `rustc_lexer`.
 
 ## Contributing
 
