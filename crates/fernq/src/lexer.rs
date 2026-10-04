@@ -1190,7 +1190,19 @@ impl<'text> Lexer<'text> {
 
     /// Returns the offset after the whitespace and non-doc comments at `pos`.
     fn skip_trivia(&self, mut pos: usize) -> Result<usize, LexError> {
+        let bytes = self.text.as_bytes();
         loop {
+            // ASCII whitespace is one byte and needs no `char` decode.
+            match bytes.get(pos) {
+                Some(b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ') => {
+                    pos += 1;
+                    continue;
+                }
+                Some(b'/') => {}
+                Some(&byte) if byte.is_ascii() => return Ok(pos),
+                None => return Ok(pos),
+                Some(_) => {}
+            }
             let rest = self.rest(pos);
             if rest.starts_with(b"//") {
                 if is_line_doc_comment(rest) {
@@ -2053,6 +2065,19 @@ mod tests {
                 "{c:?}"
             );
         }
+    }
+
+    #[test]
+    fn trivia_mixes_ascii_and_non_ascii_whitespace_and_comments() {
+        let text = " \t\u{2028} \u{85}\n// c\n  /* b */\u{200E}\r\nx";
+        let x = text.len() - 1;
+        assert_eq!(lex(text), vec![ident(x, x + 1), end(x + 1)]);
+        assert_eq!(
+            lex("  / x"),
+            vec![punct(Punctuation::Slash, 2, 3), ident(4, 5), end(5)]
+        );
+        assert_eq!(lex(" \té"), vec![ident(2, 4), end(4)]);
+        assert_eq!(lex(" \u{2028}😀"), vec![invalid('😀', 4)]);
     }
 
     #[test]
