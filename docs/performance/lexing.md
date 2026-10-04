@@ -28,7 +28,7 @@ The Cargo feature `bench` adds the hidden module `fernq::bench`. The shipped `fe
 | `TokenClass` | The class of a token: identifier, keyword, raw identifier, lifetime, raw lifetime, each literal class, punctuation, open delimiter, close delimiter. Keywords, punctuation tokens, and delimiters of one class are told apart by their text. |
 | `sizes()` | The size in bytes of `Token`, `TokenKind`, `Span`, `LexError`, `LexErrorKind`, `Result<Token, LexError>`, and `Lexer`. |
 
-Each `lex` or `tokens` call creates one source table entry, which gives lexical errors their source identity. That is a constant number of allocations per call and none per token.
+`lex` allocates nothing. It lexes outside any source table, with a source identity that names no file, and exposes no lexical error. `tokens` allocates only its result.
 
 ## Benchmark Harness
 
@@ -39,7 +39,7 @@ flowchart LR
     gen["synthetic generator"]
     fetch["pinned crates and Fernq source, normalized"]
     corpus["bench/corpus/ and MANIFEST"]
-    gate["equivalence gate: classes and spans"]
+    gate["equivalence and allocation gates"]
     fernq["fernq::bench::lex"]
     adapter["adapter over rustc_lexer"]
     raw["rustc_lexer alone (telemetry)"]
@@ -48,9 +48,9 @@ flowchart LR
     gen --> corpus
     fetch --> corpus
     corpus --> gate
-    gate -- "every file equal" --> fernq --> results
-    gate -- "every file equal" --> adapter --> results
-    gate -- "every file equal" --> raw --> results
+    gate -- "every file passes" --> fernq --> results
+    gate -- "every file passes" --> adapter --> results
+    gate -- "every file passes" --> raw --> results
 ```
 
 The harness times three implementations:
@@ -68,7 +68,7 @@ A workload is one synthetic file, one source of the real corpus (`real/<source>`
 | `dev` | One run. |
 | `validation` | Two runs; the second runs the implementations in reversed order. |
 
-A counting allocator records the allocations and bytes allocated during each sample.
+A counting allocator records the allocations and bytes allocated on the harness thread during each sample.
 
 Each run writes `bench/results/<UTC time>-<tier>/`:
 
@@ -83,9 +83,14 @@ For `rustc_lexer-tokenize`, the token count in `summary.tsv` counts `rustc_lexer
 
 `fernq-bench --instructions <implementation> <workload> <count> --corpus bench/corpus` lexes one workload `count` times and prints the folded result, for an external instruction counter such as `time -l`.
 
-## Equivalence Gate
+## Gates
 
-Before any timing, the harness lexes every corpus file with `fernq::bench::tokens` and with the adapter, in the edition that `MANIFEST` lists. The token classes and byte ranges must be equal on every file. When Fernq ends with a lexical error, the adapter must end with an error too. Any difference stops the run with status 1 before any timing and names the file and the first differing token.
+Before any timing, the harness checks every corpus file, in the edition that `MANIFEST` lists:
+
+- Equivalence gate: `fernq::bench::tokens` and the adapter give equal token classes and byte ranges. When Fernq ends with a lexical error, the adapter must end with an error too.
+- Allocation gate: `fernq::bench::lex` and the adapter make no allocation while they lex the file.
+
+A failed gate stops the run with status 1 before any timing. An equivalence failure names the file and the first differing token; an allocation failure names the file, the implementation, and its allocations.
 
 ## Reference Adapter
 

@@ -197,7 +197,7 @@ A crash writes its input to `fuzz/artifacts/lex/` and fails `make fuzz`. To fix 
 
 ### Lexer benchmark
 
-`bench/` holds the lexer benchmark, a crate outside the workspace with its own `Cargo.lock`. Its dependencies are development tools and are not part of the compiler. [Lexing Performance](docs/performance/lexing.md) describes the method: the corpora, the equivalence gate, the reference adapter, and the output files.
+`bench/` holds the lexer benchmark, a crate outside the workspace with its own `Cargo.lock`. Its dependencies are development tools and are not part of the compiler. [Lexing Performance](docs/performance/lexing.md) describes the method: the corpora, the gates, the reference adapter, and the output files.
 
 ```sh
 make bench-corpus                       # build bench/corpus/; downloads three crates
@@ -206,7 +206,7 @@ make bench TIER=validation              # validation tier: two runs, the second 
 make bench-corpus FERNQ_CORPUS_REV=dev  # take the Fernq part of the corpus from another revision
 ```
 
-`make bench-corpus` needs `curl`, `git`, and `sha256sum` or `shasum`, and network access to `static.crates.io`. It verifies each crate archive against its pinned SHA-256 before it extracts any, and stops on a mismatch. `make bench` needs the corpus, accepts only `TIER=dev` and `TIER=validation` (any other value exits with status 2), and stops before timing when the equivalence gate finds a difference. Results go to `bench/results/<UTC time>-<tier>/`. `bench/corpus/` and `bench/results/` are ignored by Git.
+`make bench-corpus` needs `curl`, `git`, and `sha256sum` or `shasum`, and network access to `static.crates.io`. It verifies each crate archive against its pinned SHA-256 before it extracts any, and stops on a mismatch. `make bench` needs the corpus, accepts only `TIER=dev` and `TIER=validation` (any other value exits with status 2), and stops before timing when the equivalence gate finds a difference or the allocation gate finds an allocation in `fernq::bench::lex` or the adapter. Results go to `bench/results/<UTC time>-<tier>/`. `bench/corpus/` and `bench/results/` are ignored by Git.
 
 Run one benchmark at a time, with no other build or benchmark on the host. Neither target is part of `make check` or the Linux container.
 
