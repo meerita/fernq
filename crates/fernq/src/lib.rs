@@ -9,11 +9,16 @@
 //! Module `lexer` owns tokens and lexical errors. Module `unicode` owns the
 //! Unicode character data and its version. Module `diagnostic` owns the
 //! diagnostic structure and its rendering. With the Cargo feature `fuzzing`,
-//! module `fuzz` gives the fuzz target in `fuzz/` its entry.
+//! module `fuzz` gives the fuzz target in `fuzz/` its entry. With the Cargo
+//! feature `bench`, module `bench` gives the benchmark harness in `bench/` its
+//! entries.
 //!
 //! `docs/compiler-session.md` owns the session contract. `docs/cli.md` owns
 //! the command-line reference.
 
+#[cfg(any(test, feature = "bench"))]
+#[doc(hidden)]
+pub mod bench;
 mod cli;
 mod diagnostic;
 mod driver;

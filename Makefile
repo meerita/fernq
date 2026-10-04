@@ -12,6 +12,8 @@ CARGO_FMT    := cargo fmt --all --check
 CARGO_CLIPPY := cargo clippy --workspace --all-targets --locked -- -D warnings
 FUZZING_CLIPPY := cargo clippy -p fernq --all-targets --locked --features fuzzing -- -D warnings
 FUZZING_TEST   := cargo test -p fernq --lib --locked --features fuzzing -- fuzz::
+BENCH_CLIPPY   := cargo clippy -p fernq --all-targets --locked --features bench -- -D warnings
+BENCH_TEST     := cargo test -p fernq --lib --locked --features bench -- bench::
 CARGO_BENCH  := cargo bench --workspace --locked
 
 # The Unicode table generator is one source file built by rustc, outside Cargo.
@@ -30,7 +32,7 @@ DOCKER_RUN := docker run --rm --platform $(PLATFORM) -v "$(CURDIR):/src:ro"
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test fmt clippy bench fuzzing tools check fuzz unicode-tables up linux shell check-all scan down
+.PHONY: help build test fmt clippy bench features tools check fuzz unicode-tables up linux shell check-all scan down
 
 help:
 	@echo "Host checks:"
@@ -40,8 +42,8 @@ help:
 	@echo "  clippy     cargo clippy with -D warnings"
 	@echo "  bench      cargo bench; not part of check"
 	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
-	@echo "  fuzzing    clippy and fuzz entry tests with the fuzzing feature"
-	@echo "  check      fmt, clippy, build, test, fuzzing, tools"
+	@echo "  features   clippy and entry tests with the fuzzing feature, then the bench feature"
+	@echo "  check      fmt, clippy, build, test, features, tools"
 	@echo "Fuzzing (needs cargo-fuzz and a C++ compiler; not part of check):"
 	@echo "  fuzz       one lexer fuzz session of FUZZ_SECONDS (1 to $(FUZZ_MAX_SECONDS), default 120)"
 	@echo "Generated source:"
@@ -70,9 +72,11 @@ clippy:
 bench:
 	$(CARGO_BENCH)
 
-fuzzing:
+features:
 	$(FUZZING_CLIPPY)
 	$(FUZZING_TEST)
+	$(BENCH_CLIPPY)
+	$(BENCH_TEST)
 
 tools:
 	mkdir -p $(TOOLS_DIR)
@@ -86,7 +90,7 @@ check:
 	$(CARGO_CLIPPY)
 	$(CARGO_BUILD)
 	$(CARGO_TEST)
-	$(MAKE) fuzzing
+	$(MAKE) features
 	$(MAKE) tools
 
 fuzz:

@@ -111,7 +111,7 @@ impl Span {
     }
 
     /// The offset just past the last byte in the span.
-    #[cfg(any(test, feature = "fuzzing"))]
+    #[cfg(any(test, feature = "fuzzing", feature = "bench"))]
     pub(crate) fn hi(self) -> ByteOffset {
         self.hi
     }
@@ -189,17 +189,17 @@ impl SourceTable {
     }
 }
 
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "bench"))]
 impl SourceTable {
     /// Adds `text` as the file at `path` without reading the file system.
     ///
     /// # Panics
     ///
-    /// Panics if the table cannot admit the text: tests and the fuzz entry
-    /// add only short texts to a table with few files.
+    /// Panics if the table cannot admit the text: tests and the fuzz and
+    /// bench entries add only short texts to a table with few files.
     pub(crate) fn add_text(&mut self, path: &str, text: &str) -> SourceId {
         self.add(PathBuf::from(path), text.to_owned())
-            .expect("a test or fuzz text fits the source table")
+            .expect("a test, fuzz, or bench text fits the source table")
     }
 }
 
