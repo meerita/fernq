@@ -7,6 +7,15 @@ publish = false
 
 [dependencies]
 fernq = { path = "../crates/fernq", features = ["bench"] }
+# The reference lexer of the comparison: `rustc_lexer` of rustc 1.99.0
+# (b940084d7), with the versions that rustc 1.99.0 locks for its support crates.
+# The last three are dependencies of `rustc_lexer`, listed only to pin their
+# versions, with the features that `rustc_lexer` enables.
+ra-ap-rustc_lexer = "=0.174.0"
+rustc-literal-escaper = "=0.0.8"
+unicode-ident = "=1.0.24"
+memchr = "=2.8.0"
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["emoji"] }
 
 # The benchmark crate is development tooling outside the compiler workspace.
 [workspace]

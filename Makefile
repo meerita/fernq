@@ -14,9 +14,9 @@ FUZZING_CLIPPY := cargo clippy -p fernq --all-targets --locked --features fuzzin
 FUZZING_TEST   := cargo test -p fernq --lib --locked --features fuzzing -- fuzz::
 BENCH_CLIPPY   := cargo clippy -p fernq --all-targets --locked --features bench -- -D warnings
 BENCH_TEST     := cargo test -p fernq --lib --locked --features bench -- bench::
-CARGO_BENCH  := cargo bench --workspace --locked
-
-# The lexer benchmark corpora. FERNQ_CORPUS_REV is the Fernq revision taken as source.
+# The lexer benchmark: TIER is dev or validation; FERNQ_CORPUS_REV is the Fernq
+# revision whose source is part of the corpus.
+TIER             ?= dev
 FERNQ_CORPUS_REV ?= 5b0b04a
 
 # The Unicode table generator is one source file built by rustc, outside Cargo.
@@ -43,11 +43,12 @@ help:
 	@echo "  test       cargo test"
 	@echo "  fmt        cargo fmt check"
 	@echo "  clippy     cargo clippy with -D warnings"
-	@echo "  bench      cargo bench; not part of check"
-	@echo "  bench-corpus  generate and fetch the lexer benchmark corpora into bench/corpus/; not part of check"
 	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
 	@echo "  features   clippy and entry tests with the fuzzing feature, then the bench feature"
 	@echo "  check      fmt, clippy, build, test, features, tools"
+	@echo "Lexer benchmark (not part of check):"
+	@echo "  bench-corpus  generate and fetch the corpora into bench/corpus/ (FERNQ_CORPUS_REV, default 5b0b04a)"
+	@echo "  bench         check equivalence, then time the lexers at TIER=dev (default) or TIER=validation"
 	@echo "Fuzzing (needs cargo-fuzz and a C++ compiler; not part of check):"
 	@echo "  fuzz       one lexer fuzz session of FUZZ_SECONDS (1 to $(FUZZ_MAX_SECONDS), default 120)"
 	@echo "Generated source:"
@@ -74,7 +75,11 @@ clippy:
 	$(CARGO_CLIPPY)
 
 bench:
-	$(CARGO_BENCH)
+	@case "$(TIER)" in \
+		dev|validation) ;; \
+		*) echo "TIER must be dev or validation, not '$(TIER)'" >&2; exit 2 ;; \
+	esac
+	sh bench/run.sh $(TIER)
 
 bench-corpus:
 	FERNQ_CORPUS_REV=$(FERNQ_CORPUS_REV) sh bench/corpus.sh
