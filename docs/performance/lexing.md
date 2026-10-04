@@ -23,10 +23,11 @@ The Cargo feature `bench` adds the hidden module `fernq::bench`. The shipped `fe
 
 | Item | Contract |
 |---|---|
-| `lex(text, edition)` | Lexes `text` to its end and returns the token count and a hash of the token spans, or `None` on a lexical error or an edition other than 2015, 2018, 2021, or 2024. It stores no token. |
-| `tokens(text, edition)` | Returns the class and byte range of each token, or `None` as `lex` does. |
-| `TokenClass` | The class of a token: identifier, keyword, raw identifier, lifetime, raw lifetime, each literal class, punctuation, open delimiter, close delimiter. Keywords, punctuation tokens, and delimiters of one class are told apart by their text. |
-| `sizes()` | The size in bytes of `Token`, `TokenKind`, `Span`, `LexError`, `LexErrorKind`, `Result<Token, LexError>`, and `Lexer`. |
+| `lex(text, edition)` | Lexes `text` to its end and returns the token count and the `fold` of every token's span and kind, or `None` on a lexical error or an edition other than 2015, 2018, 2021, or 2024. It stores no token. |
+| `tokens(text, edition)` | Returns the kind and byte range of each token, or `None` as `lex` does. |
+| `TokenKind` | The exact identity of a token: its class (identifier, keyword, raw identifier, lifetime, raw lifetime, each literal class, punctuation, open delimiter, close delimiter) and, for a keyword, a punctuation token, or a delimiter, which one (`Keyword`, `Punctuation`, `Delimiter`). These types belong to the module; the lexer's own token types stay private. |
+| `fold(hash, kind, lo, hi)` | Mixes one token's span and kind into a hash. Both timed sides of the comparison fold their tokens with it. |
+| `sizes()` | The size in bytes of `Token`, `TokenKind`, `Span`, `LexError`, `LexErrorKind`, `Result<Token, LexError>`, and `Lexer`, the lexer's representation types. |
 
 `lex` allocates nothing. It lexes outside any source table, with a source identity that names no file, and exposes no lexical error. `tokens` allocates only its result.
 
@@ -57,8 +58,8 @@ The harness times three implementations:
 
 | Implementation | Work |
 |---|---|
-| `fernq` | `fernq::bench::lex`: the Fernq lexer contract. |
-| `adapter` | The equivalence adapter: the same contract, computed over `rustc_lexer`. |
+| `fernq` | `fernq::bench::lex`: the Fernq lexer contract, each token folded with its span and exact kind. |
+| `adapter` | The equivalence adapter: the same contract, computed over `rustc_lexer`, each token folded with `fernq::bench::fold` as `fernq` folds it. |
 | `rustc_lexer-tokenize` | `rustc_lexer` tokenization alone. It does less work than the other two and is telemetry, not a comparison. |
 
 A workload is one synthetic file, one source of the real corpus (`real/<source>`), or the whole real corpus (`real`). A sample is one timed pass over the workload, repeated until the sample covers at least 1 MiB of input; the harness reports the time per pass. Each implementation gets one warm-up sample and 15 timed samples per workload.
@@ -87,7 +88,7 @@ For `rustc_lexer-tokenize`, the token count in `summary.tsv` counts `rustc_lexer
 
 Before any timing, the harness checks every corpus file, in the edition that `MANIFEST` lists:
 
-- Equivalence gate: `fernq::bench::tokens` and the adapter give equal token classes and byte ranges. When Fernq ends with a lexical error, the adapter must end with an error too.
+- Equivalence gate: `fernq::bench::tokens` and the adapter give equal token kinds and byte ranges: the same class and, for keywords, punctuation tokens, and delimiters, the same one. When Fernq ends with a lexical error, the adapter must end with an error too.
 - Allocation gate: `fernq::bench::lex` and the adapter make no allocation while they lex the file.
 
 A failed gate stops the run with status 1 before any timing. An equivalence failure names the file and the first differing token; an allocation failure names the file, the implementation, and its allocations.
@@ -103,9 +104,11 @@ The adapter does the work of the Fernq lexer contract:
 - rejects what the Fernq lexer rejects: doc comments, unterminated block comments, unknown characters, identifiers with emoji, reserved prefixes from edition 2021, guarded string prefixes and `##` from edition 2024, lifetimes that start with a digit, the raw names `_`, `crate`, `self`, `Self`, and `super`, ZWJ and ZWNJ in identifiers, lifetimes, and suffixes, and the suffix `_` alone;
 - before edition 2021, splits C strings, prefixed identifiers, and raw lifetimes as the Fernq lexer lexes them;
 - validates every literal: escapes and content with `rustc-literal-escaper`, empty integers and exponents, digits outside the radix, and binary or octal floats; CR LF inside a literal is accepted;
-- classifies keywords by edition with a `match`;
-- glues adjacent single-character punctuation into the compound punctuation of the Rust Reference with a `match`;
+- names keywords by edition with a `match`;
+- glues adjacent single-character punctuation into the compound punctuation of the Rust Reference with a `match` that names the compound token;
 - allocates nothing per token.
+
+The adapter names each token from the `rustc_lexer` token kind and from the two matches above, which its contract needs anyway. It reads no token text only to name a token.
 
 The adapter does not intern or NFC-normalize identifiers, lint bidirectional characters, pair delimiters, or build diagnostics. The `rustc` lexer layer, `rustc_parse::lexer`, does that work, and the Fernq lexer does not. A comparison with the adapter is therefore not a comparison with `rustc`'s lexer layer.
 
@@ -117,7 +120,7 @@ The adapter is frozen. A change to it starts a new comparison with a new baselin
 
 ### Synthetic Workloads
 
-A seeded `std`-only generator writes nine workload classes at 1 KiB, 10 KiB, 100 KiB, 1 MiB, and 16 MiB, as edition 2024 source that lexes to the end of file. The output depends only on the seed in `bench/src/bin/corpus-gen.rs`: two runs give identical files.
+A seeded `std`-only generator writes ten workload classes at 1 KiB, 10 KiB, 100 KiB, 1 MiB, and 16 MiB, as edition 2024 source that lexes to the end of file. The output depends only on the seed in `bench/src/bin/corpus-gen.rs`: two runs give identical files. The position of a class in the generator selects its random stream; a new class goes last, so the bytes of the existing classes stay the same.
 
 | Class | Content |
 |---|---|
@@ -125,7 +128,8 @@ A seeded `std`-only generator writes nine workload classes at 1 KiB, 10 KiB, 100
 | `keywords` | strict and reserved keywords of edition 2024 |
 | `delimiters` | balanced, nested `()`, `[]`, and `{}` with sparse atoms |
 | `whitespace` | runs of spaces, tabs, LF, and CR LF between sparse tokens |
-| `comments` | line comments, `////` comments, and nested block comments |
+| `line-comments` | indented line comments of about the length of real ones, some `////` comments, and a few short statements |
+| `block-comments` | nested and empty block comments |
 | `punctuation` | the Reference punctuation tokens, glued or separated by one space |
 | `strings` | string, byte string, C string, character, and byte literals with escapes |
 | `raw-strings` | raw strings with up to 64 `#`, holding terminator near misses |
