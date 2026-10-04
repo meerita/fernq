@@ -16,6 +16,9 @@ BENCH_CLIPPY   := cargo clippy -p fernq --all-targets --locked --features bench 
 BENCH_TEST     := cargo test -p fernq --lib --locked --features bench -- bench::
 CARGO_BENCH  := cargo bench --workspace --locked
 
+# The lexer benchmark corpora. FERNQ_CORPUS_REV is the Fernq revision taken as source.
+FERNQ_CORPUS_REV ?= 5b0b04a
+
 # The Unicode table generator is one source file built by rustc, outside Cargo.
 GENERATOR      := tools/unicode-tables.rs
 UNICODE_TABLES := crates/fernq/src/unicode/tables.rs
@@ -32,7 +35,7 @@ DOCKER_RUN := docker run --rm --platform $(PLATFORM) -v "$(CURDIR):/src:ro"
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test fmt clippy bench features tools check fuzz unicode-tables up linux shell check-all scan down
+.PHONY: help build test fmt clippy bench bench-corpus features tools check fuzz unicode-tables up linux shell check-all scan down
 
 help:
 	@echo "Host checks:"
@@ -41,6 +44,7 @@ help:
 	@echo "  fmt        cargo fmt check"
 	@echo "  clippy     cargo clippy with -D warnings"
 	@echo "  bench      cargo bench; not part of check"
+	@echo "  bench-corpus  generate and fetch the lexer benchmark corpora into bench/corpus/; not part of check"
 	@echo "  tools      format check, lint, and unit tests of the Unicode table generator"
 	@echo "  features   clippy and entry tests with the fuzzing feature, then the bench feature"
 	@echo "  check      fmt, clippy, build, test, features, tools"
@@ -71,6 +75,9 @@ clippy:
 
 bench:
 	$(CARGO_BENCH)
+
+bench-corpus:
+	FERNQ_CORPUS_REV=$(FERNQ_CORPUS_REV) sh bench/corpus.sh
 
 features:
 	$(FUZZING_CLIPPY)

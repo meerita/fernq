@@ -3,6 +3,10 @@
 /target/
 /tmp/
 
+# Benchmark build output and generated corpora
+/bench/target/
+/bench/corpus/
+
 # Fuzz build output, discovered corpus, and crash artifacts
 /fuzz/target/
 /fuzz/corpus/
