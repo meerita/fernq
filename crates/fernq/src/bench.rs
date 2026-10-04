@@ -8,7 +8,7 @@
 
 use crate::edition::Edition;
 use crate::lexer::{LexError, LexErrorKind, Lexer, Token, TokenKind};
-use crate::source::{ByteOffset, SourceTable, Span};
+use crate::source::{ByteOffset, SourceId, Span};
 
 /// The class of a token, coarser than its kind: a keyword, a punctuation
 /// token, or a delimiter is told apart from another of its class by its text.
@@ -40,17 +40,15 @@ pub enum TokenClass {
 ///
 /// The end of file is not a token. The hash starts at 0 and, for each token
 /// `lo..hi` in order, becomes `hash.wrapping_mul(0x100_0000_01b3) ^ (lo << 32 | hi)`
-/// in `u64`. The lexer stores no token.
+/// in `u64`. It allocates nothing: no source table entry, and no storage
+/// for the tokens.
 ///
 /// # Panics
 ///
 /// Panics if `text` is longer than `u32::MAX` bytes.
 pub fn lex(text: &str, edition: u16) -> Option<(usize, u64)> {
     let edition = edition_of(edition)?;
-    let mut sources = SourceTable::default();
-    // The lexer reads only `text`; the source gives its errors an identity.
-    let id = sources.add_text("bench.rs", "");
-    let mut lexer = Lexer::new(id, text, edition);
+    let mut lexer = Lexer::new(SourceId::benchmark(), text, edition);
     let (mut count, mut hash) = (0, 0u64);
     loop {
         let token = lexer.next_token().ok()?;
@@ -71,9 +69,7 @@ pub fn lex(text: &str, edition: u16) -> Option<(usize, u64)> {
 /// Panics if `text` is longer than `u32::MAX` bytes.
 pub fn tokens(text: &str, edition: u16) -> Option<Vec<(TokenClass, u32, u32)>> {
     let edition = edition_of(edition)?;
-    let mut sources = SourceTable::default();
-    let id = sources.add_text("bench.rs", "");
-    let mut lexer = Lexer::new(id, text, edition);
+    let mut lexer = Lexer::new(SourceId::benchmark(), text, edition);
     let mut tokens = Vec::new();
     loop {
         let token = lexer.next_token().ok()?;

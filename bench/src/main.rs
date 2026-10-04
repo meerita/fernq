@@ -9,8 +9,9 @@
 //!
 //! The harness reads the corpus `MANIFEST`. Before any timing, the
 //! equivalence gate lexes every corpus file with Fernq and with the adapter
-//! and requires the same token classes and spans; any difference ends the run
-//! with status 1. It then times three implementations on each workload:
+//! and requires the same token classes and spans, and the allocation gate
+//! requires that `fernq::bench::lex` and the adapter allocate nothing while
+//! they lex it; any difference or allocation ends the run with status 1. It then times three implementations on each workload:
 //! `fernq` (`fernq::bench::lex`), `adapter` (the equivalence adapter over
 //! `rustc_lexer`), and `rustc_lexer-tokenize` (`rustc_lexer` alone, telemetry
 //! that does less work than the other two). A workload is one synthetic file,
@@ -22,7 +23,7 @@
 //! implementation gets one warm-up sample and [`SAMPLES`] samples per
 //! workload. The dev tier is one run; the validation tier is two runs, the
 //! second in reversed implementation order. A counting allocator records the
-//! allocations of each sample.
+//! allocations that each sample makes on the harness thread.
 //!
 //! Writes `samples.tsv`, every raw sample, `summary.tsv`, the median,
 //! minimum, and maximum of each implementation and workload, and `sizes.tsv`,
@@ -33,11 +34,11 @@
 mod adapter;
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::hint::black_box;
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use std::{env, fs};
 
@@ -54,16 +55,27 @@ const SAMPLE_BYTES: usize = 1 << 20;
 
 const IMPLEMENTATIONS: [&str; 3] = ["fernq", "adapter", "rustc_lexer-tokenize"];
 
-/// Counts allocations while [`COUNTING`] is set.
+/// Counts the allocations of a thread inside [`counted`].
 struct CountingAllocator;
 
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
-static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+/// The allocations of the current thread while counting is on.
+#[derive(Clone, Copy)]
+struct Counts {
+    on: bool,
+    allocations: u64,
+    bytes: u64,
+}
+
+thread_local! {
+    // Constant-initialized and without a destructor: reading it allocates nothing.
+    static COUNTS: Cell<Counts> = const {
+        Cell::new(Counts { on: false, allocations: 0, bytes: 0 })
+    };
+}
 
 // SAFETY: every method forwards its arguments unchanged to `System`, which
-// meets the `GlobalAlloc` contract; counting touches only atomics, which need
-// atomicity, not ordering, and allocates nothing.
+// meets the `GlobalAlloc` contract; counting touches only a constant-initialized
+// thread-local `Cell`, which allocates nothing and is never borrowed across calls.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count(layout.size());
@@ -96,10 +108,32 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn count(bytes: usize) {
-    if COUNTING.load(Ordering::Relaxed) {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        ALLOCATED_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
-    }
+    // During thread teardown the thread-local is gone and nothing is counted.
+    let _ = COUNTS.try_with(|counts| {
+        let mut c = counts.get();
+        if c.on {
+            c.allocations += 1;
+            c.bytes += bytes as u64;
+            counts.set(c);
+        }
+    });
+}
+
+/// Runs `f` and returns its result with the number of allocations and bytes
+/// allocated that `f` made on this thread.
+fn counted<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
+    COUNTS.set(Counts {
+        on: true,
+        allocations: 0,
+        bytes: 0,
+    });
+    let result = f();
+    let counts = COUNTS.get();
+    COUNTS.set(Counts {
+        on: false,
+        ..counts
+    });
+    (result, counts.allocations, counts.bytes)
 }
 
 /// One corpus file: its manifest path, text, and edition.
@@ -299,13 +333,40 @@ fn gate(files: &[File]) -> Result<Vec<usize>, String> {
             ));
         }
         counts.push(fernq.map_or(0, |tokens| tokens.len()));
+        allocation_gate(&file.text, file.edition, edition).map_err(|message| {
+            format!(
+                "allocation gate failed on {}: {message}; nothing timed",
+                file.path
+            )
+        })?;
     }
     let tokens: usize = counts.iter().sum();
     println!(
-        "equivalence gate: {} files, {tokens} tokens, 0 mismatches",
+        "equivalence gate: {} files, {tokens} tokens, 0 mismatches; allocation gate: 0 allocations",
         files.len()
     );
     Ok(counts)
+}
+
+/// Requires that Fernq and the adapter allocate nothing while they lex `text`
+/// in the edition of year `year`, which is `edition`.
+fn allocation_gate(text: &str, year: u16, edition: Edition) -> Result<(), String> {
+    let (_, fernq, fernq_bytes) = counted(|| black_box(fernq::bench::lex(text, year)));
+    if fernq != 0 {
+        return Err(format!(
+            "fernq made {fernq} allocations, {fernq_bytes} bytes"
+        ));
+    }
+    let (_, adapter, adapter_bytes) = counted(|| {
+        let mut sink = HashSink::default();
+        black_box(adapter::lex(text, edition, &mut sink))
+    });
+    if adapter != 0 {
+        return Err(format!(
+            "the adapter made {adapter} allocations, {adapter_bytes} bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// Compares Fernq's result on `text`, `fernq`, with the adapter's. Where
@@ -433,19 +494,17 @@ struct Measurement {
 fn measure(implementation: &str, workload: &Workload, files: &[File]) -> Vec<Measurement> {
     let iterations = SAMPLE_BYTES.div_ceil(workload.bytes.max(1));
     let sample = || {
-        ALLOCATIONS.store(0, Ordering::Relaxed);
-        ALLOCATED_BYTES.store(0, Ordering::Relaxed);
-        COUNTING.store(true, Ordering::Relaxed);
-        let start = Instant::now();
-        for _ in 0..iterations {
-            black_box(pass(implementation, workload, files));
-        }
-        let ns = start.elapsed().as_nanos();
-        COUNTING.store(false, Ordering::Relaxed);
+        let (ns, allocations, bytes_allocated) = counted(|| {
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(pass(implementation, workload, files));
+            }
+            start.elapsed().as_nanos()
+        });
         Measurement {
             ns,
-            allocations: ALLOCATIONS.load(Ordering::Relaxed),
-            bytes_allocated: ALLOCATED_BYTES.load(Ordering::Relaxed),
+            allocations,
+            bytes_allocated,
         }
     };
     sample();
@@ -515,6 +574,21 @@ fn instructions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_counter_sees_allocations() {
+        let (_, allocations, bytes) = counted(|| black_box(vec![0u8; 64]));
+        assert_eq!((allocations, bytes), (1, 64));
+    }
+
+    #[test]
+    fn lexing_allocates_nothing() {
+        let text = "fn main() { let s = r#\"raw\"#; let c = 'c'; x.iter().map(|v| *v >> 2); }";
+        for year in [2015, 2018, 2021, 2024] {
+            let edition = Edition::from_year(year).unwrap();
+            assert_eq!(allocation_gate(text, year, edition), Ok(()), "{year}");
+        }
+    }
 
     #[test]
     fn the_gate_accepts_equal_results() {

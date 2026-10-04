@@ -59,9 +59,19 @@ const _: () = assert!(
 
 /// The identity of a file in the [`SourceTable`] that loaded it.
 ///
-/// Only the table constructs an id.
+/// Only the table constructs an id, except [`SourceId::benchmark`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceId(u32);
+
+#[cfg(any(test, feature = "bench"))]
+impl SourceId {
+    /// An id that no table assigned, for the benchmark entry, which lexes a
+    /// text outside any table and exposes no lexical error. It names no file
+    /// and must not reach [`SourceTable::get`].
+    pub(crate) const fn benchmark() -> Self {
+        Self(0)
+    }
+}
 
 /// A position in bytes from the start of one source file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,17 +199,17 @@ impl SourceTable {
     }
 }
 
-#[cfg(any(test, feature = "fuzzing", feature = "bench"))]
+#[cfg(any(test, feature = "fuzzing"))]
 impl SourceTable {
     /// Adds `text` as the file at `path` without reading the file system.
     ///
     /// # Panics
     ///
-    /// Panics if the table cannot admit the text: tests and the fuzz and
-    /// bench entries add only short texts to a table with few files.
+    /// Panics if the table cannot admit the text: tests and the fuzz entry
+    /// add only short texts to a table with few files.
     pub(crate) fn add_text(&mut self, path: &str, text: &str) -> SourceId {
         self.add(PathBuf::from(path), text.to_owned())
-            .expect("a test, fuzz, or bench text fits the source table")
+            .expect("a test or fuzz text fits the source table")
     }
 }
 
