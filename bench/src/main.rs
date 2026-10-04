@@ -9,7 +9,7 @@
 //!
 //! The harness reads the corpus `MANIFEST`. Before any timing, the
 //! equivalence gate lexes every corpus file with Fernq and with the adapter
-//! and requires the same token classes and spans, and the allocation gate
+//! and requires the same token kinds and spans, and the allocation gate
 //! requires that `fernq::bench::lex` and the adapter allocate nothing while
 //! they lex it; any difference or allocation ends the run with status 1. It then times three implementations on each workload:
 //! `fernq` (`fernq::bench::lex`), `adapter` (the equivalence adapter over
@@ -42,7 +42,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 use std::{env, fs};
 
-use fernq::bench::TokenClass;
+use fernq::bench::TokenKind;
 use ra_ap_rustc_lexer::FrontmatterAllowed;
 
 use crate::adapter::{Edition, HashSink, Sink};
@@ -156,22 +156,22 @@ struct Workload {
 struct Mismatch {
     /// The index of the first token that differs.
     index: usize,
-    fernq: Option<(TokenClass, u32, u32)>,
-    adapter: Option<(TokenClass, u32, u32)>,
+    fernq: Option<(TokenKind, u32, u32)>,
+    adapter: Option<(TokenKind, u32, u32)>,
     /// Which side ended lexing with an error, if any.
     error: &'static str,
 }
 
 /// Compares the adapter's tokens with `expected`, Fernq's, as they arrive.
 struct CompareSink<'a> {
-    expected: &'a [(TokenClass, u32, u32)],
+    expected: &'a [(TokenKind, u32, u32)],
     index: usize,
     mismatch: Option<Mismatch>,
 }
 
 impl Sink for CompareSink<'_> {
-    fn token(&mut self, class: TokenClass, lo: u32, hi: u32) {
-        let got = (class, lo, hi);
+    fn token(&mut self, kind: TokenKind, lo: u32, hi: u32) {
+        let got = (kind, lo, hi);
         if self.mismatch.is_none() && self.expected.get(self.index) != Some(&got) {
             self.mismatch = Some(Mismatch {
                 index: self.index,
@@ -373,7 +373,7 @@ fn allocation_gate(text: &str, year: u16, edition: Edition) -> Result<(), String
 /// Fernq ends with an error, which it gives without the tokens before it, the
 /// adapter must end with an error too.
 fn compare(
-    fernq: Option<&[(TokenClass, u32, u32)]>,
+    fernq: Option<&[(TokenKind, u32, u32)]>,
     text: &str,
     edition: Edition,
 ) -> Result<(), Mismatch> {
@@ -574,6 +574,7 @@ fn instructions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fernq::bench::{Keyword, Punctuation};
 
     #[test]
     fn the_counter_sees_allocations() {
@@ -603,18 +604,28 @@ mod tests {
     fn the_gate_reports_a_planted_difference() {
         let text = "fn main() { let x = 1 + 2; }";
         let mut planted = fernq::bench::tokens(text, 2024).unwrap();
-        planted[5].0 = TokenClass::Identifier;
+        planted[5].0 = TokenKind::Identifier;
         let mismatch = compare(Some(&planted), text, Edition::E2024).unwrap_err();
-        println!("planted class difference: {mismatch:?}");
+        println!("planted kind difference: {mismatch:?}");
         assert_eq!(
             mismatch,
             Mismatch {
                 index: 5,
-                fernq: Some((TokenClass::Identifier, 12, 15)),
-                adapter: Some((TokenClass::Keyword, 12, 15)),
+                fernq: Some((TokenKind::Identifier, 12, 15)),
+                adapter: Some((TokenKind::Keyword(Keyword::Let), 12, 15)),
                 error: "",
             }
         );
+
+        // The gate compares which keyword and which punctuation token.
+        let mut planted = fernq::bench::tokens(text, 2024).unwrap();
+        planted[5].0 = TokenKind::Keyword(Keyword::Fn);
+        let mismatch = compare(Some(&planted), text, Edition::E2024).unwrap_err();
+        assert_eq!(mismatch.index, 5);
+        let mut planted = fernq::bench::tokens(text, 2024).unwrap();
+        planted[9].0 = TokenKind::Punctuation(Punctuation::Minus);
+        let mismatch = compare(Some(&planted), text, Edition::E2024).unwrap_err();
+        assert_eq!(mismatch.index, 9);
 
         planted.truncate(3);
         let mismatch = compare(Some(&planted), text, Edition::E2024).unwrap_err();

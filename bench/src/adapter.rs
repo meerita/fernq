@@ -1,7 +1,7 @@
 //! The equivalence adapter: the token contract of the Fernq lexer, computed
 //! over `rustc_lexer` of rustc 1.99.0.
 //!
-//! [`lex`] gives the classes and byte ranges that `fernq::bench::tokens`
+//! [`lex`] gives the kinds and byte ranges that `fernq::bench::tokens`
 //! gives, or `None` where Fernq ends lexing with an error. It does the work of
 //! that contract on top of `rustc_lexer::Cursor`:
 //!
@@ -21,10 +21,16 @@
 //!   `check_for_errors`, which runs `unescape_*` and `check_raw_*`), empty
 //!   integers and exponents, digits outside the radix, and binary or octal
 //!   floats; CR LF inside a literal is accepted, as Fernq accepts it;
-//! - classifies keywords by edition with a `match`;
+//! - names keywords by edition with a `match`;
 //! - glues adjacent single-character punctuation, left to right, into the
-//!   compound punctuation of the Rust Reference with a `match`;
-//! - gives each token to a [`Sink`]. It allocates nothing per token.
+//!   compound punctuation of the Rust Reference with a `match` that names
+//!   the compound token;
+//! - gives each token to a [`Sink`] with its exact `fernq::bench::TokenKind`.
+//!   It allocates nothing per token.
+//!
+//! The identity of a token comes from the `rustc_lexer` token kind and from
+//! the two matches above, which the contract needs anyway; the adapter reads
+//! no token text only to name a token.
 //!
 //! It does not intern or NFC-normalize identifiers, lint bidirectional
 //! characters, pair delimiters, or build diagnostics: the rustc lexer layer
@@ -35,7 +41,7 @@
 
 use std::ops::Range;
 
-use fernq::bench::TokenClass;
+use fernq::bench::{Delimiter, Keyword, Punctuation, TokenKind as Kind};
 use memchr::memmem;
 use ra_ap_rustc_lexer::{Base, Cursor, FrontmatterAllowed, LiteralKind, TokenKind};
 use rustc_literal_escaper::{self as escaper, EscapeError, Mode};
@@ -63,11 +69,11 @@ impl Edition {
 
 /// Receives each token, in order.
 pub trait Sink {
-    fn token(&mut self, class: TokenClass, lo: u32, hi: u32);
+    fn token(&mut self, kind: Kind, lo: u32, hi: u32);
 }
 
-/// Folds the tokens as `fernq::bench::lex` does: their number and the hash
-/// of their spans.
+/// Folds the tokens as `fernq::bench::lex` does: their number and
+/// `fernq::bench::fold` of their kinds and spans.
 #[derive(Default)]
 pub struct HashSink {
     pub count: usize,
@@ -75,8 +81,8 @@ pub struct HashSink {
 }
 
 impl Sink for HashSink {
-    fn token(&mut self, _class: TokenClass, lo: u32, hi: u32) {
-        self.hash = self.hash.wrapping_mul(0x100_0000_01b3) ^ (u64::from(lo) << 32 | u64::from(hi));
+    fn token(&mut self, kind: Kind, lo: u32, hi: u32) {
+        self.hash = fernq::bench::fold(self.hash, kind, lo, hi);
         self.count += 1;
     }
 }
@@ -86,6 +92,7 @@ impl Sink for HashSink {
 struct Pending {
     lo: usize,
     hi: usize,
+    punctuation: Punctuation,
 }
 
 /// Lexes `text` in `edition` to its end and gives each token to `sink`.
@@ -121,7 +128,7 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
             let hi = lo + token.len as usize;
             pos = hi;
             let mut restart = None;
-            let class = match token.kind {
+            let kind = match token.kind {
                 TokenKind::Whitespace | TokenKind::LineComment { doc_style: None } => continue,
                 TokenKind::BlockComment {
                     doc_style: None,
@@ -136,14 +143,26 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                     starts_with_number: true,
                 } => return None,
                 TokenKind::Eof => break 'cursor,
-                kind if punctuation_char(kind).is_some() => {
+                kind if let Some(punctuation) = single_punctuation(kind) => {
                     match pending {
-                        Some(p) if p.hi == lo && is_compound(&text.as_bytes()[p.lo..hi]) => {
-                            pending = Some(Pending { lo: p.lo, hi });
+                        Some(p)
+                            if p.hi == lo
+                                && let Some(punctuation) = compound(&text.as_bytes()[p.lo..hi]) =>
+                        {
+                            pending = Some(Pending {
+                                lo: p.lo,
+                                hi,
+                                punctuation,
+                            });
                         }
                         _ => {
-                            if let Some(p) = pending.replace(Pending { lo, hi }) {
-                                emit(sink, TokenClass::Punctuation, p.lo, p.hi);
+                            let next = Pending {
+                                lo,
+                                hi,
+                                punctuation,
+                            };
+                            if let Some(p) = pending.replace(next) {
+                                emit(sink, Kind::Punctuation(p.punctuation), p.lo, p.hi);
                             }
                         }
                     }
@@ -154,8 +173,13 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                         return None;
                     }
                     // `#` then `"` or `#`: a `#` token, and lexing resumes after it.
-                    if let Some(p) = pending.replace(Pending { lo, hi: lo + 1 }) {
-                        emit(sink, TokenClass::Punctuation, p.lo, p.hi);
+                    let pound = Pending {
+                        lo,
+                        hi: lo + 1,
+                        punctuation: Punctuation::Pound,
+                    };
+                    if let Some(p) = pending.replace(pound) {
+                        emit(sink, Kind::Punctuation(p.punctuation), p.lo, p.hi);
                     }
                     pos = lo + 1;
                     continue 'cursor;
@@ -168,18 +192,14 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                     if has_zero_width_joiner(joiners, name) {
                         return None;
                     }
-                    if is_keyword(name.as_bytes(), edition) {
-                        TokenClass::Keyword
-                    } else {
-                        TokenClass::Identifier
-                    }
+                    keyword(name.as_bytes(), edition).map_or(Kind::Identifier, Kind::Keyword)
                 }
                 TokenKind::RawIdent => {
                     let name = &text[lo + 2..hi];
                     if is_reserved_raw_name(name) || has_zero_width_joiner(joiners, name) {
                         return None;
                     }
-                    TokenClass::RawIdentifier
+                    Kind::RawIdentifier
                 }
                 TokenKind::Lifetime {
                     starts_with_number: false,
@@ -191,19 +211,19 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                     if has_zero_width_joiner(joiners, &text[lo..hi]) {
                         return None;
                     }
-                    TokenClass::Lifetime
+                    Kind::Lifetime
                 }
                 TokenKind::RawLifetime if since_2021 => {
                     let name = &text[lo + 3..hi];
                     if is_reserved_raw_name(name) || has_zero_width_joiner(joiners, name) {
                         return None;
                     }
-                    TokenClass::RawLifetime
+                    Kind::RawLifetime
                 }
                 TokenKind::RawLifetime => {
                     // `'r`, then `#` and the name.
                     restart = Some(lo + 2);
-                    TokenClass::Lifetime
+                    Kind::Lifetime
                 }
                 TokenKind::Literal {
                     kind: LiteralKind::CStr { .. },
@@ -211,7 +231,7 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                 } if !since_2021 => {
                     // `c`, then the string.
                     restart = Some(lo + 1);
-                    TokenClass::Identifier
+                    Kind::Identifier
                 }
                 TokenKind::Literal {
                     kind: LiteralKind::RawCStr { .. },
@@ -219,47 +239,47 @@ pub fn lex(text: &str, edition: Edition, sink: &mut impl Sink) -> Option<()> {
                 } if !since_2021 => {
                     // `cr`, then `#` or the string.
                     restart = Some(lo + 2);
-                    TokenClass::Identifier
+                    Kind::Identifier
                 }
                 TokenKind::Literal { kind, suffix_start } => {
                     let suffix = lo + suffix_start as usize;
                     literal(text, lo, suffix, hi, kind, joiners)?
                 }
-                TokenKind::OpenParen | TokenKind::OpenBrace | TokenKind::OpenBracket => {
-                    TokenClass::OpenDelimiter
-                }
-                TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket => {
-                    TokenClass::CloseDelimiter
-                }
+                TokenKind::OpenParen => Kind::OpenDelimiter(Delimiter::Parenthesis),
+                TokenKind::OpenBracket => Kind::OpenDelimiter(Delimiter::Bracket),
+                TokenKind::OpenBrace => Kind::OpenDelimiter(Delimiter::Brace),
+                TokenKind::CloseParen => Kind::CloseDelimiter(Delimiter::Parenthesis),
+                TokenKind::CloseBracket => Kind::CloseDelimiter(Delimiter::Bracket),
+                TokenKind::CloseBrace => Kind::CloseDelimiter(Delimiter::Brace),
                 _ => return None,
             };
             if let Some(p) = pending.take() {
-                emit(sink, TokenClass::Punctuation, p.lo, p.hi);
+                emit(sink, Kind::Punctuation(p.punctuation), p.lo, p.hi);
             }
             match restart {
                 Some(next) => {
-                    emit(sink, class, lo, next);
+                    emit(sink, kind, lo, next);
                     pos = next;
                     continue 'cursor;
                 }
-                None => emit(sink, class, lo, hi),
+                None => emit(sink, kind, lo, hi),
             }
         }
     }
     if let Some(p) = pending {
-        emit(sink, TokenClass::Punctuation, p.lo, p.hi);
+        emit(sink, Kind::Punctuation(p.punctuation), p.lo, p.hi);
     }
     Some(())
 }
 
 /// Gives `lo..hi` to `sink`; both ends are at most the length of a text
 /// that [`lex`] admitted, which fits a `u32`.
-fn emit(sink: &mut impl Sink, class: TokenClass, lo: usize, hi: usize) {
-    sink.token(class, lo as u32, hi as u32);
+fn emit(sink: &mut impl Sink, kind: Kind, lo: usize, hi: usize) {
+    sink.token(kind, lo as u32, hi as u32);
 }
 
 /// Validates the literal `lo..hi` whose suffix starts at `suffix`, and
-/// returns its class.
+/// returns its kind.
 fn literal(
     text: &str,
     lo: usize,
@@ -267,7 +287,7 @@ fn literal(
     hi: usize,
     kind: LiteralKind,
     joiners: bool,
-) -> Option<TokenClass> {
+) -> Option<Kind> {
     let body = &text[lo..suffix];
     let suffix = &text[suffix..hi];
     if suffix == "_" || has_zero_width_joiner(joiners, suffix) {
@@ -282,48 +302,44 @@ fn literal(
             let radix = match base {
                 Base::Binary => b'2',
                 Base::Octal => b'8',
-                Base::Decimal | Base::Hexadecimal => return Some(TokenClass::IntegerLiteral),
+                Base::Decimal | Base::Hexadecimal => return Some(Kind::IntegerLiteral),
             };
             // `rustc_lexer` reads decimal digits after `0b` and `0o`.
             let in_radix = body.as_bytes()[2..].iter().all(|&b| b == b'_' || b < radix);
-            return in_radix.then_some(TokenClass::IntegerLiteral);
+            return in_radix.then_some(Kind::IntegerLiteral);
         }
         LiteralKind::Float {
             base: Base::Decimal,
             empty_exponent: false,
         } => {
-            return Some(TokenClass::FloatLiteral);
+            return Some(Kind::FloatLiteral);
         }
         LiteralKind::Float { .. } => return None,
         LiteralKind::Char { terminated: true } => {
             let ok = escaper::unescape_char(quoted(0, 0)).is_ok();
-            return ok.then_some(TokenClass::CharLiteral);
+            return ok.then_some(Kind::CharLiteral);
         }
         LiteralKind::Byte { terminated: true } => {
             let ok = escaper::unescape_byte(quoted(1, 0)).is_ok();
-            return ok.then_some(TokenClass::ByteLiteral);
+            return ok.then_some(Kind::ByteLiteral);
         }
-        LiteralKind::Str { terminated: true } => {
-            (TokenClass::StringLiteral, Mode::Str, quoted(0, 0))
-        }
+        LiteralKind::Str { terminated: true } => (Kind::StringLiteral, Mode::Str, quoted(0, 0)),
         LiteralKind::ByteStr { terminated: true } => {
-            (TokenClass::ByteStringLiteral, Mode::ByteStr, quoted(1, 0))
+            (Kind::ByteStringLiteral, Mode::ByteStr, quoted(1, 0))
         }
-        LiteralKind::CStr { terminated: true } => {
-            (TokenClass::CStringLiteral, Mode::CStr, quoted(1, 0))
-        }
+        LiteralKind::CStr { terminated: true } => (Kind::CStringLiteral, Mode::CStr, quoted(1, 0)),
         LiteralKind::RawStr { n_hashes: Some(n) } => (
-            TokenClass::RawStringLiteral,
+            Kind::RawStringLiteral,
             Mode::RawStr,
             quoted(1, usize::from(n)),
         ),
         LiteralKind::RawByteStr { n_hashes: Some(n) } => (
-            TokenClass::RawByteStringLiteral,
+            Kind::RawByteStringLiteral,
             Mode::RawByteStr,
             quoted(2, usize::from(n)),
         ),
         LiteralKind::RawCStr { n_hashes: Some(n) } => (
-            TokenClass::RawCStringLiteral,
+            Kind::RawCStringLiteral,
             Mode::RawCStr,
             quoted(2, usize::from(n)),
         ),
@@ -349,81 +365,127 @@ fn accepts(content: &str, range: Range<usize>, error: EscapeError) -> bool {
     }
 }
 
-/// The character of a single-character punctuation token.
-fn punctuation_char(kind: TokenKind) -> Option<u8> {
+/// The punctuation token of a single-character `rustc_lexer` token.
+fn single_punctuation(kind: TokenKind) -> Option<Punctuation> {
     Some(match kind {
-        TokenKind::Semi => b';',
-        TokenKind::Comma => b',',
-        TokenKind::Dot => b'.',
-        TokenKind::At => b'@',
-        TokenKind::Pound => b'#',
-        TokenKind::Tilde => b'~',
-        TokenKind::Question => b'?',
-        TokenKind::Colon => b':',
-        TokenKind::Dollar => b'$',
-        TokenKind::Eq => b'=',
-        TokenKind::Bang => b'!',
-        TokenKind::Lt => b'<',
-        TokenKind::Gt => b'>',
-        TokenKind::Minus => b'-',
-        TokenKind::And => b'&',
-        TokenKind::Or => b'|',
-        TokenKind::Plus => b'+',
-        TokenKind::Star => b'*',
-        TokenKind::Slash => b'/',
-        TokenKind::Caret => b'^',
-        TokenKind::Percent => b'%',
+        TokenKind::Semi => Punctuation::Semi,
+        TokenKind::Comma => Punctuation::Comma,
+        TokenKind::Dot => Punctuation::Dot,
+        TokenKind::At => Punctuation::At,
+        TokenKind::Pound => Punctuation::Pound,
+        TokenKind::Tilde => Punctuation::Tilde,
+        TokenKind::Question => Punctuation::Question,
+        TokenKind::Colon => Punctuation::Colon,
+        TokenKind::Dollar => Punctuation::Dollar,
+        TokenKind::Eq => Punctuation::Eq,
+        TokenKind::Bang => Punctuation::Not,
+        TokenKind::Lt => Punctuation::Lt,
+        TokenKind::Gt => Punctuation::Gt,
+        TokenKind::Minus => Punctuation::Minus,
+        TokenKind::And => Punctuation::And,
+        TokenKind::Or => Punctuation::Or,
+        TokenKind::Plus => Punctuation::Plus,
+        TokenKind::Star => Punctuation::Star,
+        TokenKind::Slash => Punctuation::Slash,
+        TokenKind::Caret => Punctuation::Caret,
+        TokenKind::Percent => Punctuation::Percent,
         _ => return None,
     })
 }
 
-/// Whether `text` is compound punctuation of the Rust Reference. Each
-/// three-character compound starts with a two-character one, so left-to-right
-/// gluing finds the longest token.
-fn is_compound(text: &[u8]) -> bool {
-    matches!(
-        text,
-        b"..."
-            | b"..="
-            | b"<<="
-            | b">>="
-            | b"!="
-            | b"%="
-            | b"&&"
-            | b"&="
-            | b"*="
-            | b"+="
-            | b"-="
-            | b"->"
-            | b".."
-            | b"/="
-            | b"::"
-            | b"<-"
-            | b"<<"
-            | b"<="
-            | b"=="
-            | b"=>"
-            | b">="
-            | b">>"
-            | b"^="
-            | b"|="
-            | b"||"
-    )
+/// The compound punctuation token of the Rust Reference spelled `text`, or
+/// `None`. Each three-character compound starts with a two-character one, so
+/// left-to-right gluing finds the longest token.
+fn compound(text: &[u8]) -> Option<Punctuation> {
+    Some(match text {
+        b"..." => Punctuation::DotDotDot,
+        b"..=" => Punctuation::DotDotEq,
+        b"<<=" => Punctuation::ShlEq,
+        b">>=" => Punctuation::ShrEq,
+        b"!=" => Punctuation::Ne,
+        b"%=" => Punctuation::PercentEq,
+        b"&&" => Punctuation::AndAnd,
+        b"&=" => Punctuation::AndEq,
+        b"*=" => Punctuation::StarEq,
+        b"+=" => Punctuation::PlusEq,
+        b"-=" => Punctuation::MinusEq,
+        b"->" => Punctuation::RArrow,
+        b".." => Punctuation::DotDot,
+        b"/=" => Punctuation::SlashEq,
+        b"::" => Punctuation::PathSep,
+        b"<-" => Punctuation::LArrow,
+        b"<<" => Punctuation::Shl,
+        b"<=" => Punctuation::Le,
+        b"==" => Punctuation::EqEq,
+        b"=>" => Punctuation::FatArrow,
+        b">=" => Punctuation::Ge,
+        b">>" => Punctuation::Shr,
+        b"^=" => Punctuation::CaretEq,
+        b"|=" => Punctuation::OrEq,
+        b"||" => Punctuation::OrOr,
+        _ => return None,
+    })
 }
 
-/// Whether `name` is a strict or reserved keyword in `edition`.
-fn is_keyword(name: &[u8], edition: Edition) -> bool {
-    match name {
-        b"as" | b"break" | b"const" | b"continue" | b"crate" | b"else" | b"enum" | b"extern"
-        | b"false" | b"fn" | b"for" | b"if" | b"impl" | b"in" | b"let" | b"loop" | b"match"
-        | b"mod" | b"move" | b"mut" | b"pub" | b"ref" | b"return" | b"self" | b"Self"
-        | b"static" | b"struct" | b"super" | b"trait" | b"true" | b"type" | b"unsafe" | b"use"
-        | b"where" | b"while" | b"_" | b"abstract" | b"become" | b"box" | b"do" | b"final"
-        | b"macro" | b"override" | b"priv" | b"typeof" | b"unsized" | b"virtual" | b"yield" => true,
-        b"async" | b"await" | b"dyn" | b"try" => edition >= Edition::E2018,
-        b"gen" => edition >= Edition::E2024,
-        _ => false,
-    }
+/// The strict or reserved keyword spelled `name` in `edition`, or `None`.
+fn keyword(name: &[u8], edition: Edition) -> Option<Keyword> {
+    let since_2018 = edition >= Edition::E2018;
+    Some(match name {
+        b"as" => Keyword::As,
+        b"break" => Keyword::Break,
+        b"const" => Keyword::Const,
+        b"continue" => Keyword::Continue,
+        b"crate" => Keyword::Crate,
+        b"else" => Keyword::Else,
+        b"enum" => Keyword::Enum,
+        b"extern" => Keyword::Extern,
+        b"false" => Keyword::False,
+        b"fn" => Keyword::Fn,
+        b"for" => Keyword::For,
+        b"if" => Keyword::If,
+        b"impl" => Keyword::Impl,
+        b"in" => Keyword::In,
+        b"let" => Keyword::Let,
+        b"loop" => Keyword::Loop,
+        b"match" => Keyword::Match,
+        b"mod" => Keyword::Mod,
+        b"move" => Keyword::Move,
+        b"mut" => Keyword::Mut,
+        b"pub" => Keyword::Pub,
+        b"ref" => Keyword::Ref,
+        b"return" => Keyword::Return,
+        b"self" => Keyword::SelfValue,
+        b"Self" => Keyword::SelfType,
+        b"static" => Keyword::Static,
+        b"struct" => Keyword::Struct,
+        b"super" => Keyword::Super,
+        b"trait" => Keyword::Trait,
+        b"true" => Keyword::True,
+        b"type" => Keyword::Type,
+        b"unsafe" => Keyword::Unsafe,
+        b"use" => Keyword::Use,
+        b"where" => Keyword::Where,
+        b"while" => Keyword::While,
+        b"_" => Keyword::Underscore,
+        b"abstract" => Keyword::Abstract,
+        b"become" => Keyword::Become,
+        b"box" => Keyword::Box,
+        b"do" => Keyword::Do,
+        b"final" => Keyword::Final,
+        b"macro" => Keyword::Macro,
+        b"override" => Keyword::Override,
+        b"priv" => Keyword::Priv,
+        b"typeof" => Keyword::Typeof,
+        b"unsized" => Keyword::Unsized,
+        b"virtual" => Keyword::Virtual,
+        b"yield" => Keyword::Yield,
+        b"async" if since_2018 => Keyword::Async,
+        b"await" if since_2018 => Keyword::Await,
+        b"dyn" if since_2018 => Keyword::Dyn,
+        b"try" if since_2018 => Keyword::Try,
+        b"gen" if edition >= Edition::E2024 => Keyword::Gen,
+        _ => return None,
+    })
 }
 
 fn is_reserved_raw_name(name: &str) -> bool {
@@ -441,15 +503,15 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct Tokens(Vec<(TokenClass, u32, u32)>);
+    struct Tokens(Vec<(Kind, u32, u32)>);
 
     impl Sink for Tokens {
-        fn token(&mut self, class: TokenClass, lo: u32, hi: u32) {
-            self.0.push((class, lo, hi));
+        fn token(&mut self, kind: Kind, lo: u32, hi: u32) {
+            self.0.push((kind, lo, hi));
         }
     }
 
-    fn tokens(text: &str, edition: Edition) -> Option<Vec<(TokenClass, u32, u32)>> {
+    fn tokens(text: &str, edition: Edition) -> Option<Vec<(Kind, u32, u32)>> {
         let mut sink = Tokens::default();
         lex(text, edition, &mut sink).map(|()| sink.0)
     }
@@ -505,23 +567,67 @@ mod tests {
     }
 
     #[test]
-    fn classifies_keywords_by_edition() {
-        let class = |name: &str, edition| tokens(name, edition).unwrap()[0].0;
-        assert_eq!(class("fn", Edition::E2015), TokenClass::Keyword);
-        assert_eq!(class("async", Edition::E2015), TokenClass::Identifier);
-        assert_eq!(class("async", Edition::E2018), TokenClass::Keyword);
-        assert_eq!(class("dyn", Edition::E2015), TokenClass::Identifier);
-        assert_eq!(class("try", Edition::E2018), TokenClass::Keyword);
-        assert_eq!(class("gen", Edition::E2021), TokenClass::Identifier);
-        assert_eq!(class("gen", Edition::E2024), TokenClass::Keyword);
-        assert_eq!(class("union", Edition::E2024), TokenClass::Identifier);
-        assert_eq!(class("_", Edition::E2015), TokenClass::Keyword);
+    fn names_keywords_by_edition() {
+        let kind = |name: &str, edition| tokens(name, edition).unwrap()[0].0;
+        assert_eq!(kind("fn", Edition::E2015), Kind::Keyword(Keyword::Fn));
+        assert_eq!(kind("async", Edition::E2015), Kind::Identifier);
+        assert_eq!(kind("async", Edition::E2018), Kind::Keyword(Keyword::Async));
+        assert_eq!(kind("dyn", Edition::E2015), Kind::Identifier);
+        assert_eq!(kind("try", Edition::E2018), Kind::Keyword(Keyword::Try));
+        assert_eq!(kind("gen", Edition::E2021), Kind::Identifier);
+        assert_eq!(kind("gen", Edition::E2024), Kind::Keyword(Keyword::Gen));
+        assert_eq!(kind("union", Edition::E2024), Kind::Identifier);
+        assert_eq!(
+            kind("_", Edition::E2015),
+            Kind::Keyword(Keyword::Underscore)
+        );
+        assert_eq!(
+            kind("self", Edition::E2015),
+            Kind::Keyword(Keyword::SelfValue)
+        );
+        assert_eq!(
+            kind("Self", Edition::E2015),
+            Kind::Keyword(Keyword::SelfType)
+        );
         for text in [
             "async await dyn try gen union macro_rules raw safe _ Self self",
             "r#gen 'static",
         ] {
             agrees(text);
         }
+    }
+
+    #[test]
+    fn names_punctuation_and_delimiters() {
+        let kinds = |text: &str| -> Vec<Kind> {
+            tokens(text, Edition::E2021)
+                .unwrap()
+                .iter()
+                .map(|&(kind, _, _)| kind)
+                .collect()
+        };
+        let p = Kind::Punctuation;
+        assert_eq!(kinds("&&&"), [p(Punctuation::AndAnd), p(Punctuation::And)]);
+        assert_eq!(kinds(">>= !"), [p(Punctuation::ShrEq), p(Punctuation::Not)]);
+        assert_eq!(
+            kinds("#\"x\""),
+            [p(Punctuation::Pound), Kind::StringLiteral]
+        );
+        assert_eq!(
+            kinds("([{}])"),
+            [
+                Kind::OpenDelimiter(Delimiter::Parenthesis),
+                Kind::OpenDelimiter(Delimiter::Bracket),
+                Kind::OpenDelimiter(Delimiter::Brace),
+                Kind::CloseDelimiter(Delimiter::Brace),
+                Kind::CloseDelimiter(Delimiter::Bracket),
+                Kind::CloseDelimiter(Delimiter::Parenthesis),
+            ]
+        );
+        let every = "... ..= <<= >>= != %= && &= *= += -= -> .. /= :: <- << <= == => >= >> ^= |= \
+                     || ! # $ % & * + , - . / : ; < = > ? @ ^ | ~ ( ) [ ] { }";
+        assert_eq!(kinds(every).len(), 52);
+        agrees(every);
     }
 
     #[test]
