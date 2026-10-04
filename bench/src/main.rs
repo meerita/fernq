@@ -14,7 +14,8 @@
 //! `fernq` (`fernq::bench::lex`), `adapter` (the equivalence adapter over
 //! `rustc_lexer`), and `rustc_lexer-tokenize` (`rustc_lexer` alone, telemetry
 //! that does less work than the other two). A workload is one synthetic file,
-//! or `real`, every file of the real corpus.
+//! `real/<source>`, the files of one source of the real corpus, or `real`,
+//! every file of the real corpus.
 //!
 //! A sample is one timed pass over the workload, repeated until it covers at
 //! least [`SAMPLE_BYTES`]; ns per pass divides by the repetitions. Each
@@ -23,9 +24,9 @@
 //! second in reversed implementation order. A counting allocator records the
 //! allocations of each sample.
 //!
-//! Writes `samples.tsv`, every raw sample, and `summary.tsv`, the median,
-//! minimum, and maximum of each implementation and workload, to the output
-//! directory. `--instructions` lexes one workload `count` times with one
+//! Writes `samples.tsv`, every raw sample, `summary.tsv`, the median,
+//! minimum, and maximum of each implementation and workload, and `sizes.tsv`,
+//! the sizes of the Fernq lexer representation, to the output directory. `--instructions` lexes one workload `count` times with one
 //! implementation and prints the folded result, for an external counter such
 //! as `time -l`.
 
@@ -251,6 +252,11 @@ fn run(tier: &str, corpus: &Path, out: &Path) -> Result<(), String> {
         let path = out.join(name);
         fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
     };
+    let mut sizes = String::from("type\tbytes\n");
+    for (name, size) in fernq::bench::sizes() {
+        let _ = writeln!(sizes, "{name}\t{size}");
+    }
+    write("sizes.tsv", &sizes)?;
     write("samples.tsv", &samples)?;
     write("summary.tsv", &summary)
 }
@@ -361,11 +367,30 @@ fn workloads(files: &[File]) -> Vec<Workload> {
             Some(workload(name.to_owned(), vec![index]))
         })
         .collect();
+    let mut sources: Vec<&str> = Vec::new();
+    for file in files {
+        if let Some(source) = real_source(&file.path)
+            && !sources.contains(&source)
+        {
+            sources.push(source);
+        }
+    }
+    for source in sources {
+        let members = (0..files.len())
+            .filter(|&f| real_source(&files[f].path) == Some(source))
+            .collect();
+        workloads.push(workload(format!("real/{source}"), members));
+    }
     let real = (0..files.len())
-        .filter(|&f| files[f].path.starts_with("real/"))
+        .filter(|&f| real_source(&files[f].path).is_some())
         .collect();
     workloads.push(workload("real".to_owned(), real));
     workloads
+}
+
+/// The source of a real corpus path: `<source>` in `real/<source>/...`.
+fn real_source(path: &str) -> Option<&str> {
+    path.strip_prefix("real/")?.split('/').next()
 }
 
 /// The folded result of one pass of `implementation` over `files`.

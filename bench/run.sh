@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs the lexer benchmark harness at tier $1, dev or validation, on
 # bench/corpus/, and writes bench/results/<UTC time>-<tier>/, which Git
-# ignores: environment.txt, samples.tsv, and summary.tsv.
+# ignores: environment.txt, samples.tsv, summary.tsv, and sizes.tsv.
 
 set -eu
 
